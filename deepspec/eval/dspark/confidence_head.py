@@ -43,20 +43,20 @@ class PerPositionConfidenceMetrics:
         self.num_fine_bins = int(num_fine_bins)
         self.coarse_count = torch.zeros(
             (self.block_size, self.num_coarse_bins),
-            dtype=torch.float64,
+            dtype=torch.float32,
             device=device,
         )
         self.coarse_pred = torch.zeros_like(self.coarse_count)
         self.coarse_target = torch.zeros_like(self.coarse_count)
         self.fine_pos = torch.zeros(
             (self.block_size, self.num_fine_bins),
-            dtype=torch.float64,
+            dtype=torch.float32,
             device=device,
         )
         self.fine_neg = torch.zeros_like(self.fine_pos)
         self.brier_num = torch.zeros(
             self.block_size,
-            dtype=torch.float64,
+            dtype=torch.float32,
             device=device,
         )
 
@@ -66,12 +66,12 @@ class PerPositionConfidenceMetrics:
         probs: torch.Tensor,
         targets: torch.Tensor,
     ) -> None:
-        probs = probs.reshape(-1).to(torch.float64).clamp(EPS_PROB, 1.0 - EPS_PROB)
-        targets = targets.reshape(-1).to(torch.float64)
+        probs = probs.reshape(-1).to(torch.float32).clamp(EPS_PROB, 1.0 - EPS_PROB)
+        targets = targets.reshape(-1).to(torch.float32)
         assert probs.shape == targets.shape
         pos_count = probs.numel()
         assert pos_count <= self.block_size
-        weights = torch.ones_like(probs, dtype=torch.float64)
+        weights = torch.ones_like(probs, dtype=torch.float32)
         pos_idx = torch.arange(pos_count, device=probs.device)
 
         coarse_idx = (
@@ -363,11 +363,11 @@ class ConfidenceHeadRecorder:
         step_probs = torch.sigmoid(
             confidence_logits[:, :effective_length]
         ).squeeze(0)
-        cumprod_pred = step_probs.to(torch.float64).cumprod(dim=0)
+        cumprod_pred = step_probs.to(torch.float32).cumprod(dim=0)
         prefix_label = (
             verification.accept_prefix_mask[:, :effective_length]
             .squeeze(0)
-            .to(torch.float64)
+            .to(torch.float32)
         )
         self.dataset_metrics.update(
             probs=cumprod_pred,
@@ -539,9 +539,12 @@ class ConfidenceHeadRecorder:
         writer.close()
 
     def build_table(self) -> str:
-        from prettytable import PrettyTable
+        try:
+            from prettytable import PrettyTable
+        except ModuleNotFoundError:
+            PrettyTable = None
 
-        table = PrettyTable()
+        table = PrettyTable() if PrettyTable is not None else None
         max_position_count = max(
             (len(row.get("per_position") or []) for row in self.rows),
             default=0,
@@ -559,7 +562,9 @@ class ConfidenceHeadRecorder:
         ]
         field_names.extend(f"ece@{pos}" for pos in range(max_position_count))
         field_names.extend(f"auc@{pos}" for pos in range(max_position_count))
-        table.field_names = field_names
+        if table is not None:
+            table.field_names = field_names
+        fallback_rows = []
 
         draft_name = model_display_name(self.draft_name_or_path)
         for row in self.rows:
@@ -568,36 +573,42 @@ class ConfidenceHeadRecorder:
                 int(entry["position"]): entry
                 for entry in row.get("per_position") or []
             }
-            table.add_row(
-                [
-                    row["dataset"],
-                    draft_name,
-                    row["sample_count"],
-                    row["proposal_count"],
-                    format_float(summary["ece_mean"]),
-                    format_float(summary["auc_mean"]),
-                    format_float(summary["brier_mean"]),
-                    format_float(summary["pred_mean"]),
-                    format_float(summary["target_mean"]),
-                ] + [
-                    (
-                        format_float(per_position[pos]["ece"])
-                        if pos in per_position
-                        and float(per_position[pos]["total_weight"]) > 0.0
-                        else "-"
-                    )
-                    for pos in range(max_position_count)
-                ] + [
-                    (
-                        format_float(per_position[pos]["auc"])
-                        if pos in per_position
-                        and float(per_position[pos]["total_weight"]) > 0.0
-                        else "-"
-                    )
-                    for pos in range(max_position_count)
-                ]
-            )
-        return table.get_string()
+            table_row = [
+                row["dataset"],
+                draft_name,
+                row["sample_count"],
+                row["proposal_count"],
+                format_float(summary["ece_mean"]),
+                format_float(summary["auc_mean"]),
+                format_float(summary["brier_mean"]),
+                format_float(summary["pred_mean"]),
+                format_float(summary["target_mean"]),
+            ] + [
+                (
+                    format_float(per_position[pos]["ece"])
+                    if pos in per_position
+                    and float(per_position[pos]["total_weight"]) > 0.0
+                    else "-"
+                )
+                for pos in range(max_position_count)
+            ] + [
+                (
+                    format_float(per_position[pos]["auc"])
+                    if pos in per_position
+                    and float(per_position[pos]["total_weight"]) > 0.0
+                    else "-"
+                )
+                for pos in range(max_position_count)
+            ]
+            if table is not None:
+                table.add_row(table_row)
+            else:
+                fallback_rows.append(table_row)
+        if table is not None:
+            return table.get_string()
+        lines = ["\t".join(str(value) for value in field_names)]
+        lines.extend("\t".join(str(value) for value in row) for row in fallback_rows)
+        return "\n".join(lines)
 
     def print_results(self) -> None:
         if dist.get_rank() == 0 and self.rows:

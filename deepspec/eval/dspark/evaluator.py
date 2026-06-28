@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import torch.distributed as dist
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
 from deepspec.eval.base_evaluator import (
@@ -182,11 +184,18 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
         for dataset_name, max_samples in self.tasks:
             if self.confidence_head_recorder is not None:
                 self.confidence_head_recorder.start()
+            dist.barrier()
+            start_time = time.perf_counter()
             responses = self.run_dataset(
                 dataset_name=dataset_name,
                 max_samples=max_samples,
             )
+            dist.barrier()
+            elapsed_seconds = time.perf_counter() - start_time
             metric_summary = self.allreduce_response_metrics(responses)
+            elapsed_tensor = torch.tensor(elapsed_seconds, device=self.device, dtype=torch.float32)
+            dist.all_reduce(elapsed_tensor, op=dist.ReduceOp.MAX)
+            metric_summary["elapsed_seconds"] = float(elapsed_tensor.item())
             confidence_row = (
                 self.confidence_head_recorder.finish(
                     dataset_name=dataset_name,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,9 +120,12 @@ def build_results_table(
     draft_name_or_path: str,
     header: bool = True,
 ) -> str:
-    from prettytable import PrettyTable
+    try:
+        from prettytable import PrettyTable
+    except ModuleNotFoundError:
+        PrettyTable = None
 
-    table = PrettyTable()
+    table = PrettyTable() if PrettyTable is not None else None
     max_positions = max(
         (len(metrics["accept_rates_by_position"]) for metrics in rows),
         default=0,
@@ -133,10 +137,15 @@ def build_results_table(
         "#propose",
         "accept_len",
         "verify_rate",
+        "samples",
+        "out_tokens",
+        "tok/s",
+        "verify/s",
     ]
     field_names.extend(f"accept_rate@{pos_idx}" for pos_idx in range(max_positions))
-    table.field_names = field_names
-    table.header = header
+    if table is not None:
+        table.field_names = field_names
+        table.header = header
 
     normalized_target_model_name = model_name_or_path.rstrip("/")
     target_model_name = (
@@ -154,14 +163,29 @@ def build_results_table(
             f"{metrics['draft_tokens_per_proposal']:.2f}+1",
             f"{metrics['acceptance_length']:.2f}",
             f"{metrics['verify_rate']:.4f}",
+            int(metrics.get("num_samples", 0)),
+            int(metrics.get("output_tokens", 0)),
+            f"{float(metrics.get('output_tokens_per_second', 0.0)):.2f}",
+            f"{float(metrics.get('verifications_per_second', 0.0)):.2f}",
         ]
         row.extend(
             f"{accept_rate:.4f}" if accept_rate is not None else "-"
             for accept_rate in metrics["accept_rates_by_position"]
         )
         row.extend(["-"] * (max_positions - len(metrics["accept_rates_by_position"])))
-        table.add_row(row)
-    return table.get_string()
+        if table is not None:
+            table.add_row(row)
+        else:
+            if not locals().get("fallback_rows"):
+                fallback_rows = []
+            fallback_rows.append(row)
+    if table is not None:
+        return table.get_string()
+    lines = []
+    if header:
+        lines.append("\t".join(str(value) for value in field_names))
+    lines.extend("\t".join(str(value) for value in row) for row in fallback_rows)
+    return "\n".join(lines)
 
 
 @dataclass
@@ -501,6 +525,9 @@ class BaseEvaluator:
                 accept_rates_by_position.append(
                     accepted_at_pos[pos_idx] / position_proposal_count
                 )
+        elapsed_seconds = float(metric_summary.get("elapsed_seconds", 0.0))
+        output_tokens = int(metric_summary.get("output_token_sum", 0))
+        verify_count = int(metric_summary.get("verify_count_sum", 0))
         return {
             "dataset": dataset_name,
             "num_samples": int(metric_summary["sample_count"]),
@@ -508,6 +535,10 @@ class BaseEvaluator:
             "acceptance_length": acceptance_length,
             "verify_rate": verify_rate,
             "accept_rates_by_position": accept_rates_by_position,
+            "elapsed_seconds": elapsed_seconds,
+            "output_tokens": output_tokens,
+            "output_tokens_per_second": output_tokens / elapsed_seconds if elapsed_seconds > 0.0 else 0.0,
+            "verifications_per_second": verify_count / elapsed_seconds if elapsed_seconds > 0.0 else 0.0,
         }
 
     def run_dataset(
@@ -556,6 +587,8 @@ class BaseEvaluator:
             "proposal_count": 0,
             "acceptance_length_sum": 0,
             "proposal_length_sum": 0,
+            "output_token_sum": 0,
+            "verify_count_sum": 0,
             "proposals_at_pos": [0] * self.max_proposal_tokens,
             "accepted_at_pos": [0] * self.max_proposal_tokens,
         }
@@ -565,6 +598,8 @@ class BaseEvaluator:
         assert isinstance(accepted_at_pos, list)
 
         for response in responses:
+            metric_summary["output_token_sum"] += int(getattr(response, "num_output_tokens", 0))
+            metric_summary["verify_count_sum"] += int(getattr(response, "verify_count", 0))
             acceptance_lengths = getattr(response, "acceptance_lengths", None)
             proposal_lengths = getattr(response, "proposal_lengths", None)
             accepted_draft_lengths = getattr(response, "accepted_draft_lengths", None)
@@ -603,6 +638,8 @@ class BaseEvaluator:
                 int(metric_summary["proposal_count"]),
                 int(metric_summary["acceptance_length_sum"]),
                 int(metric_summary["proposal_length_sum"]),
+                int(metric_summary["output_token_sum"]),
+                int(metric_summary["verify_count_sum"]),
             ],
             device=self.device,
             dtype=torch.int64,
@@ -621,6 +658,8 @@ class BaseEvaluator:
             "proposal_count": int(scalar_tensor[1].item()),
             "acceptance_length_sum": int(scalar_tensor[2].item()),
             "proposal_length_sum": int(scalar_tensor[3].item()),
+            "output_token_sum": int(scalar_tensor[4].item()),
+            "verify_count_sum": int(scalar_tensor[5].item()),
             "proposals_at_pos": position_tensor[
                 : self.max_proposal_tokens
             ].tolist(),
@@ -712,11 +751,18 @@ class BaseEvaluator:
 
     def evaluate(self) -> None:
         for dataset_name, max_samples in self.tasks:
+            dist.barrier()
+            start_time = time.perf_counter()
             responses = self.run_dataset(
                 dataset_name=dataset_name,
                 max_samples=max_samples,
             )
+            dist.barrier()
+            elapsed_seconds = time.perf_counter() - start_time
             metric_summary = self.allreduce_response_metrics(responses)
+            elapsed_tensor = torch.tensor(elapsed_seconds, device=self.device, dtype=torch.float32)
+            dist.all_reduce(elapsed_tensor, op=dist.ReduceOp.MAX)
+            metric_summary["elapsed_seconds"] = float(elapsed_tensor.item())
             self.record_dataset_metrics(
                 dataset_name=dataset_name,
                 metric_summary=metric_summary,
