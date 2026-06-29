@@ -574,34 +574,35 @@ class ConfidenceHeadRecorder:
                 int(entry["position"]): entry
                 for entry in row.get("per_position") or []
             }
-            table_row = [
-                row["dataset"],
-                draft_name,
-                row["sample_count"],
-                row["proposal_count"],
-                format_float(summary["ece_mean"]),
-                format_float(summary["auc_mean"]),
-                format_float(summary["brier_mean"]),
-                format_float(summary["pred_mean"]),
-                format_float(summary["target_mean"]),
-            ] + [
-                (
-                    format_float(per_position[pos]["ece"])
-                    if pos in per_position
-                    and float(per_position[pos]["total_weight"]) > 0.0
-                    else "-"
-                )
-                for pos in range(max_position_count)
-            ] + [
-                (
-                    format_float(per_position[pos]["auc"])
-                    if pos in per_position
-                    and float(per_position[pos]["total_weight"]) > 0.0
-                    else "-"
-                )
-                for pos in range(max_position_count)
-            ]
-            table.add_row(table_row)
+            table.add_row(
+                [
+                    row["dataset"],
+                    draft_name,
+                    row["sample_count"],
+                    row["proposal_count"],
+                    format_float(summary["ece_mean"]),
+                    format_float(summary["auc_mean"]),
+                    format_float(summary["brier_mean"]),
+                    format_float(summary["pred_mean"]),
+                    format_float(summary["target_mean"]),
+                ] + [
+                    (
+                        format_float(per_position[pos]["ece"])
+                        if pos in per_position
+                        and float(per_position[pos]["total_weight"]) > 0.0
+                        else "-"
+                    )
+                    for pos in range(max_position_count)
+                ] + [
+                    (
+                        format_float(per_position[pos]["auc"])
+                        if pos in per_position
+                        and float(per_position[pos]["total_weight"]) > 0.0
+                        else "-"
+                    )
+                    for pos in range(max_position_count)
+                ]
+            )
         return table.get_string()
 
     def print_results(self) -> None:
