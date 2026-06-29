@@ -8,7 +8,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from deepspec.data import CacheDataset, validate_train_cache
 from deepspec.data.cuda_prefetcher import CUDAPrefetcher
@@ -29,6 +29,7 @@ from deepspec.trainer.ckpt_manager import (
 )
 import deepspec.utils.training_logger as training_logger
 from deepspec.utils.hfai_suspend import SuspendController
+from deepspec.utils.target_weights import load_target_embeddings_and_head
 
 
 _PRECISION_DTYPES = {
@@ -257,22 +258,23 @@ class BaseTrainer:
         )
         draft_model = draft_model.to(device=self.device, dtype=self.precision_dtype)
 
+        self._initialize_embeddings_and_head_from_target(draft_model, model_args)
+        return draft_model, tokenizer
+
+    def _initialize_embeddings_and_head_from_target(self, draft_model, model_args):
         # Training only uses the target checkpoint to initialize frozen draft
         # embeddings and lm_head weights.
-        target_model = AutoModelForCausalLM.from_pretrained(
+        target_embed_tokens, target_lm_head = load_target_embeddings_and_head(
             model_args.target_model_name_or_path,
+            embed_shape=draft_model.embed_tokens.weight.shape,
+            lm_head_shape=draft_model.lm_head.weight.shape,
             dtype=self.precision_dtype,
-        ).to(device="cpu").eval()
-        target_embed_tokens = target_model.get_input_embeddings()
-        target_lm_head = target_model.get_output_embeddings()
-        assert (target_lm_head is not None) and (target_embed_tokens is not None)
+        )
         draft_model.initialize_embeddings_and_head(
             embed_tokens=target_embed_tokens,
             lm_head=target_lm_head,
             freeze=True,
         )
-        del target_model
-        return draft_model, tokenizer
 
     def _build_draft_model(self, *, target_config, model_args):
         raise NotImplementedError
