@@ -119,12 +119,9 @@ def build_results_table(
     draft_name_or_path: str,
     header: bool = True,
 ) -> str:
-    try:
-        from prettytable import PrettyTable
-    except ModuleNotFoundError:
-        PrettyTable = None
+    from prettytable import PrettyTable
 
-    table = PrettyTable() if PrettyTable is not None else None
+    table = PrettyTable()
     max_positions = max(
         (len(metrics["accept_rates_by_position"]) for metrics in rows),
         default=0,
@@ -138,9 +135,8 @@ def build_results_table(
         "verify_rate",
     ]
     field_names.extend(f"accept_rate@{pos_idx}" for pos_idx in range(max_positions))
-    if table is not None:
-        table.field_names = field_names
-        table.header = header
+    table.field_names = field_names
+    table.header = header
 
     normalized_target_model_name = model_name_or_path.rstrip("/")
     target_model_name = (
@@ -150,7 +146,6 @@ def build_results_table(
     draft_model_name = (
         os.path.basename(normalized_draft_model_name) or normalized_draft_model_name
     )
-    fallback_rows = []
     for metrics in rows:
         row = [
             metrics["dataset"],

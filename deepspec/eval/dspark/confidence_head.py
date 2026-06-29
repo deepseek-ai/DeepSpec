@@ -545,12 +545,9 @@ class ConfidenceHeadRecorder:
         writer.close()
 
     def build_table(self) -> str:
-        try:
-            from prettytable import PrettyTable
-        except ModuleNotFoundError:
-            PrettyTable = None
+        from prettytable import PrettyTable
 
-        table = PrettyTable() if PrettyTable is not None else None
+        table = PrettyTable()
         max_position_count = max(
             (len(row.get("per_position") or []) for row in self.rows),
             default=0,
@@ -568,9 +565,7 @@ class ConfidenceHeadRecorder:
         ]
         field_names.extend(f"ece@{pos}" for pos in range(max_position_count))
         field_names.extend(f"auc@{pos}" for pos in range(max_position_count))
-        if table is not None:
-            table.field_names = field_names
-        fallback_rows = []
+        table.field_names = field_names
 
         draft_name = model_display_name(self.draft_name_or_path)
         for row in self.rows:
@@ -606,15 +601,8 @@ class ConfidenceHeadRecorder:
                 )
                 for pos in range(max_position_count)
             ]
-            if table is not None:
-                table.add_row(table_row)
-            else:
-                fallback_rows.append(table_row)
-        if table is not None:
-            return table.get_string()
-        lines = ["\t".join(str(value) for value in field_names)]
-        lines.extend("\t".join(str(value) for value in row) for row in fallback_rows)
-        return "\n".join(lines)
+            table.add_row(table_row)
+        return table.get_string()
 
     def print_results(self) -> None:
         if dist.get_rank() == 0 and self.rows:
