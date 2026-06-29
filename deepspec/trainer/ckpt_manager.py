@@ -12,10 +12,12 @@ from torch.distributed.fsdp import FullStateDictConfig, StateDictType
 
 from deepspec.utils import (
     ensure_dir,
+    get_rng_state,
     is_global_main_process,
     print_on_global_main,
     print_on_local_main,
     safe_symlink,
+    set_rng_state,
 )
 
 
@@ -112,7 +114,9 @@ def load_training_state(
     assert saved_local_batch_size == int(local_batch_size)
 
     torch.set_rng_state(checkpoint["torch_rng"])
-    _set_device_rng_state(checkpoint.get("torch_cuda_rng"))
+    rng_state = checkpoint.get("torch_accelerator_rng", checkpoint.get("torch_cuda_rng"))
+    if rng_state is not None:
+        set_rng_state(rng_state)
     np.random.set_state(checkpoint["numpy_rng"])
     random.setstate(checkpoint["python_rng"])
 
@@ -185,34 +189,6 @@ def save_checkpoint(
     return checkpoint_dir
 
 
-def _get_device_rng_state():
-    """Return RNG state of the active accelerator (NPU if available, else CUDA)."""
-    try:
-        import torch_npu  # noqa: F401
-        if torch.npu.is_available():
-            return torch.npu.get_rng_state()
-    except Exception:
-        pass
-    if torch.cuda.is_available():
-        return torch.cuda.get_rng_state()
-    return None
-
-
-def _set_device_rng_state(state):
-    """Restore RNG state on the active accelerator (NPU if available, else CUDA)."""
-    if state is None:
-        return
-    try:
-        import torch_npu  # noqa: F401
-        if torch.npu.is_available():
-            torch.npu.set_rng_state(state)
-            return
-    except Exception:
-        pass
-    if torch.cuda.is_available():
-        torch.cuda.set_rng_state(state)
-
-
 def _rank_training_state_path(checkpoint_dir: str, global_rank: int) -> str:
     return os.path.join(
         checkpoint_dir,
@@ -241,7 +217,7 @@ def _serialize_training_state(
         "world_size": int(world_size),
         "local_batch_size": int(local_batch_size),
         "torch_rng": torch.get_rng_state(),
-        "torch_cuda_rng": _get_device_rng_state(),
+        "torch_accelerator_rng": get_rng_state(),
         "numpy_rng": np.random.get_state(),
         "python_rng": random.getstate(),
     }

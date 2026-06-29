@@ -4,6 +4,7 @@ import os
 import torch
 from deepspec.utils import (
     CustomJSONEncoder,
+    device_count,
     get_git_diff,
     load_config,
     parse_opts_to_config,
@@ -15,20 +16,6 @@ os.environ['USE_TORCH']='true'
 os.environ['WANDB_DISABLED']='true'
 os.environ['TOKENIZERS_PARALLELISM']='false'
 torch.set_float32_matmul_precision("high")
-
-
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
-def _device_count():
-    if _is_npu_available():
-        return torch.npu.device_count()
-    return torch.cuda.device_count()
 
 
 def parse_args():
@@ -54,8 +41,6 @@ def main(local_rank):
 
 if __name__ == "__main__":
     if os.path.exists(".git"):
-        try:
-            print(f"git sha:", get_git_sha())
-        except Exception:
-            pass
-    torch.multiprocessing.spawn(main, nprocs=_device_count())
+        print(f"git status:", "\n\n".join(get_git_sha(detail_info=True)))
+        print("git diff:", get_git_diff())
+    torch.multiprocessing.spawn(main, nprocs=device_count())

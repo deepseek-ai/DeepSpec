@@ -26,6 +26,8 @@ from deepspec.data.target_cache_dataset import (
 from deepspec.data.jsonl_dataset import JsonLineDataset
 from deepspec.utils import (
     CustomJSONEncoder,
+    device_count,
+    empty_cache,
     get_git_diff,
     get_git_sha,
     init_dist,
@@ -44,27 +46,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # PyTorch 2.10 Inductor still reads the legacy allow_tf32 flag while compiling.
 torch.set_float32_matmul_precision("high")
-
-
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
-def _device_count():
-    if _is_npu_available():
-        return torch.npu.device_count()
-    return torch.cuda.device_count()
-
-
-def _empty_cache():
-    if _is_npu_available():
-        torch.npu.empty_cache()
-    elif torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 @dataclass(frozen=True)
@@ -275,7 +256,7 @@ def main(local_rank: int):
     target_model = AutoModel.from_pretrained(
         config.model.target_model_name_or_path,
         dtype=torch.bfloat16,
-        attn_implementation="eager",
+        attn_implementation="sdpa",
     ).to(device=device).eval()
     target_hidden_size = _get_target_hidden_size(target_model)
     train_collator = ConversationCollator(
@@ -356,7 +337,7 @@ def main(local_rank: int):
     finally:
         writer.close()
     del target_model
-    _empty_cache()
+    empty_cache()
     dataset.close()
     summary = LocalCacheWriteSummary(
         global_rank=global_rank,
@@ -418,8 +399,6 @@ def main(local_rank: int):
 
 if __name__ == "__main__":
     if os.path.exists(".git"):
-        try:
-            print(f"git sha:", get_git_sha())
-        except Exception:
-            pass
-    torch.multiprocessing.spawn(main, nprocs=_device_count())
+        print(f"git status:", "\n\n".join(get_git_sha(detail_info=True)))
+        print("git diff:", get_git_diff())
+    torch.multiprocessing.spawn(main, nprocs=device_count())

@@ -1,21 +1,10 @@
 import copy
 
-import torch
-
 from deepspec.modeling.dspark.common import validate_target_layer_ids
+from deepspec.utils import is_npu_available
 
 
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
-# NPU does not support flex_attention; fall back to eager. GPU keeps the
-# original flex_attention path for best performance.
-TRAIN_ATTN_IMPLEMENTATION = "eager" if _is_npu_available() else "flex_attention"
+TRAIN_ATTN_IMPLEMENTATION = "sdpa" if is_npu_available() else "flex_attention"
 
 
 def build_draft_config(

@@ -1,13 +1,11 @@
 from __future__ import annotations
 import argparse
 import json
-import os
-
 import torch
 from transformers import AutoConfig
 from deepspec.eval.dspark import Gemma4DSparkEvaluator, Qwen3DSparkEvaluator
 from deepspec.eval.eagle3 import Gemma4Eagle3Evaluator, Qwen3Eagle3Evaluator
-from deepspec.utils import CustomJSONEncoder
+from deepspec.utils import CustomJSONEncoder, device_count
 
 EVALUATORS = {
     "Qwen3DSparkModel": Qwen3DSparkEvaluator,
@@ -18,7 +16,7 @@ EVALUATORS = {
 }
 
 TASKS = [
-    ("gsm8k", 10),
+    ("gsm8k", 500),
     ("math500", 500),
     ("aime25",30),
     ("humaneval", 164),
@@ -28,31 +26,7 @@ TASKS = [
     ("alpaca", 500),
     ("arena-hard-v2", 500),
 ]
-
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
-def _visible_device_count():
-    """Return the number of devices actually usable by this process.
-
-    Honors ``ASCEND_RT_VISIBLE_DEVICES`` (NPU) and ``CUDA_VISIBLE_DEVICES``
-    (CUDA) so that ``torch.multiprocessing.spawn`` does not over-spawn
-    workers when the process is restricted to a subset of physical devices.
-    """
-    if _is_npu_available():
-        vis = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "").strip()
-        if vis:
-            return len([d for d in vis.split(",") if d.strip() != ""])
-        return torch.npu.device_count()
-    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if vis:
-        return len([d for d in vis.split(",") if d.strip() != ""])
-    return torch.cuda.device_count()
+TASK_DEFAULTS = dict(TASKS)
 
 
 def parse_args():
@@ -71,18 +45,28 @@ def parse_args():
     parser.add_argument("--step", type=int, default=None,help=("step for tensorboard logging"),)
     parser.add_argument("--seed", type=int, default=980406)
     parser.add_argument(
-        "--tasks",
-        type=str,
+        "--task",
+        action="append",
         default=None,
-        help=("Comma-separated dataset names to evaluate (e.g. gsm8k). Defaults to all tasks."),
+        help="Dataset name under eval_datasets without .jsonl. Repeat to run several tasks.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="Override the sample count for every selected task.",
     )
     args = parser.parse_args()
-    if args.tasks is not None:
-        selected = {name.strip() for name in args.tasks.split(",")}
-        args.tasks = [task for task in TASKS if task[0] in selected]
-        assert args.tasks, f"No matching tasks for --tasks={args.tasks}"
-    else:
-        args.tasks = list(TASKS)
+    task_names = args.task if args.task else [name for name, _ in TASKS]
+    args.tasks = [
+        (
+            name,
+            args.num_samples if args.num_samples is not None else TASK_DEFAULTS.get(name),
+        )
+        for name in task_names
+    ]
+    unknown_defaults = [name for name, max_samples in args.tasks if max_samples is None]
+    assert not unknown_defaults, "--num-samples is required for unknown task(s): " + ", ".join(unknown_defaults)
     return args
 
 
@@ -100,5 +84,5 @@ if __name__ == "__main__":
     torch.multiprocessing.spawn(
         main,
         args=(args,),
-        nprocs=_visible_device_count(),
+        nprocs=device_count(),
     )

@@ -27,6 +27,11 @@ def model_display_name(path: str) -> str:
     return os.path.basename(normalized) or normalized
 
 
+def confidence_metric_dtype(device: torch.device) -> torch.dtype:
+    device = torch.device(device)
+    return torch.float32 if device.type == "npu" else torch.float64
+
+
 class PerPositionConfidenceMetrics:
     """Per-position ECE + AUROC + Brier for cumprod predictions."""
 
@@ -41,22 +46,23 @@ class PerPositionConfidenceMetrics:
         self.block_size = int(block_size)
         self.num_coarse_bins = int(num_coarse_bins)
         self.num_fine_bins = int(num_fine_bins)
+        self.dtype = confidence_metric_dtype(device)
         self.coarse_count = torch.zeros(
             (self.block_size, self.num_coarse_bins),
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
         self.coarse_pred = torch.zeros_like(self.coarse_count)
         self.coarse_target = torch.zeros_like(self.coarse_count)
         self.fine_pos = torch.zeros(
             (self.block_size, self.num_fine_bins),
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
         self.fine_neg = torch.zeros_like(self.fine_pos)
         self.brier_num = torch.zeros(
             self.block_size,
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
 
@@ -66,12 +72,12 @@ class PerPositionConfidenceMetrics:
         probs: torch.Tensor,
         targets: torch.Tensor,
     ) -> None:
-        probs = probs.reshape(-1).to(torch.float64).clamp(EPS_PROB, 1.0 - EPS_PROB)
-        targets = targets.reshape(-1).to(torch.float64)
+        probs = probs.reshape(-1).to(self.dtype).clamp(EPS_PROB, 1.0 - EPS_PROB)
+        targets = targets.reshape(-1).to(self.dtype)
         assert probs.shape == targets.shape
         pos_count = probs.numel()
         assert pos_count <= self.block_size
-        weights = torch.ones_like(probs, dtype=torch.float64)
+        weights = torch.ones_like(probs, dtype=self.dtype)
         pos_idx = torch.arange(pos_count, device=probs.device)
 
         coarse_idx = (
@@ -92,10 +98,6 @@ class PerPositionConfidenceMetrics:
         self.brier_num[:pos_count].add_(weights * (probs - targets).pow(2))
 
     def all_reduce(self) -> None:
-        # NPU hccl does not support float64 all_reduce (ERR02007). On NPU,
-        # cast float64 tensors to float32 for the reduction and restore the
-        # original dtype afterwards. GPU/nccl supports float64 natively.
-        need_f32_cast = self._on_npu()
         for tensor in (
             self.coarse_count,
             self.coarse_pred,
@@ -104,20 +106,7 @@ class PerPositionConfidenceMetrics:
             self.fine_neg,
             self.brier_num,
         ):
-            if need_f32_cast and tensor.dtype is torch.float64:
-                reduced = tensor.to(torch.float32)
-                dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
-                tensor.copy_(reduced.to(torch.float64))
-            else:
-                dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-
-    @staticmethod
-    def _on_npu() -> bool:
-        try:
-            import torch_npu  # noqa: F401
-            return torch.npu.is_available()
-        except Exception:
-            return False
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
 
     @staticmethod
     def _auroc_from_hist(pos_hist: torch.Tensor, neg_hist: torch.Tensor) -> float:
@@ -380,11 +369,11 @@ class ConfidenceHeadRecorder:
         step_probs = torch.sigmoid(
             confidence_logits[:, :effective_length]
         ).squeeze(0)
-        cumprod_pred = step_probs.to(torch.float64).cumprod(dim=0)
+        cumprod_pred = step_probs.to(self.dataset_metrics.dtype).cumprod(dim=0)
         prefix_label = (
             verification.accept_prefix_mask[:, :effective_length]
             .squeeze(0)
-            .to(torch.float64)
+            .to(self.dataset_metrics.dtype)
         )
         self.dataset_metrics.update(
             probs=cumprod_pred,
@@ -585,35 +574,34 @@ class ConfidenceHeadRecorder:
                 int(entry["position"]): entry
                 for entry in row.get("per_position") or []
             }
-            table.add_row(
-                [
-                    row["dataset"],
-                    draft_name,
-                    row["sample_count"],
-                    row["proposal_count"],
-                    format_float(summary["ece_mean"]),
-                    format_float(summary["auc_mean"]),
-                    format_float(summary["brier_mean"]),
-                    format_float(summary["pred_mean"]),
-                    format_float(summary["target_mean"]),
-                ] + [
-                    (
-                        format_float(per_position[pos]["ece"])
-                        if pos in per_position
-                        and float(per_position[pos]["total_weight"]) > 0.0
-                        else "-"
-                    )
-                    for pos in range(max_position_count)
-                ] + [
-                    (
-                        format_float(per_position[pos]["auc"])
-                        if pos in per_position
-                        and float(per_position[pos]["total_weight"]) > 0.0
-                        else "-"
-                    )
-                    for pos in range(max_position_count)
-                ]
-            )
+            table_row = [
+                row["dataset"],
+                draft_name,
+                row["sample_count"],
+                row["proposal_count"],
+                format_float(summary["ece_mean"]),
+                format_float(summary["auc_mean"]),
+                format_float(summary["brier_mean"]),
+                format_float(summary["pred_mean"]),
+                format_float(summary["target_mean"]),
+            ] + [
+                (
+                    format_float(per_position[pos]["ece"])
+                    if pos in per_position
+                    and float(per_position[pos]["total_weight"]) > 0.0
+                    else "-"
+                )
+                for pos in range(max_position_count)
+            ] + [
+                (
+                    format_float(per_position[pos]["auc"])
+                    if pos in per_position
+                    and float(per_position[pos]["total_weight"]) > 0.0
+                    else "-"
+                )
+                for pos in range(max_position_count)
+            ]
+            table.add_row(table_row)
         return table.get_string()
 
     def print_results(self) -> None:

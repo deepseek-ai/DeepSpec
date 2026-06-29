@@ -2,22 +2,12 @@ from threading import Thread
 
 import torch
 
-
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
-def _stream_module():
-    return torch.npu if _is_npu_available() else torch.cuda
+from deepspec.utils import accelerator_module
 
 
 def move_batch_to_device(batch, device):
     moved = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
-    # Embedding lookup requires int64; cast on device to avoid bloating host-to-device transfer.
+    # Embedding lookup requires int64; cast on GPU to avoid bloating CPU-to-GPU transfer.
     if moved["input_ids"].dtype != torch.long:
         moved["input_ids"] = moved["input_ids"].to(torch.long)
     return moved
@@ -26,7 +16,7 @@ def move_batch_to_device(batch, device):
 class CUDAPrefetcher:
     """Overlaps DataLoader iteration and H2D transfer with compute.
 
-    Uses a background thread and a dedicated device stream so that both
+    Uses a background thread and a dedicated CUDA stream so that both
     next(dataloader) and the H2D copy for the next batch run concurrently
     with the forward/backward of the current batch.
     """
@@ -34,8 +24,8 @@ class CUDAPrefetcher:
     def __init__(self, dataloader, device):
         self.dataloader = dataloader
         self.device = device
-        self._sm = _stream_module()
-        self.stream = self._sm.Stream(device=device)
+        self.accelerator = accelerator_module()
+        self.stream = self.accelerator.Stream(device=device)
 
     def __iter__(self):
         self._iter = iter(self.dataloader)
@@ -53,7 +43,7 @@ class CUDAPrefetcher:
         except StopIteration:
             self._done = True
             return
-        with self._sm.stream(self.stream):
+        with self.accelerator.stream(self.stream):
             self._gpu_batch = move_batch_to_device(cpu_batch, self.device)
 
     def __next__(self):
@@ -66,7 +56,7 @@ class CUDAPrefetcher:
             raise StopIteration
 
         # Make the compute stream wait until the side-stream H2D is complete.
-        current = self._sm.current_stream(self.device)
+        current = self.accelerator.current_stream(self.device)
         current.wait_stream(self.stream)
         batch = self._gpu_batch
 

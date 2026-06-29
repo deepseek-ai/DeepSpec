@@ -15,6 +15,8 @@ from deepspec.data.cuda_prefetcher import CUDAPrefetcher
 from deepspec.utils import (
     BF16Optimizer,
     StatelessResumableDistributedSampler,
+    device_count,
+    device_type,
     ensure_dir,
     init_dist,
     is_global_main_process,
@@ -52,14 +54,6 @@ _HYBRID_STRATEGIES = (
 )
 
 
-def _is_npu_available():
-    try:
-        import torch_npu  # noqa: F401
-        return torch.npu.is_available()
-    except Exception:
-        return False
-
-
 def _build_fsdp_kwargs(
     *, sharding_strategy_name: str, precision_dtype, world_size: int
 ) -> dict:
@@ -73,14 +67,9 @@ def _build_fsdp_kwargs(
         sharding_strategy=sharding_strategy,
     )
     if sharding_strategy in _HYBRID_STRATEGIES:
-        if _is_npu_available():
-            devices_per_node = torch.npu.device_count()
-            device_type = "npu"
-        else:
-            devices_per_node = torch.cuda.device_count()
-            device_type = "cuda"
+        devices_per_node = device_count()
         fsdp_kwargs["device_mesh"] = init_device_mesh(
-            device_type,
+            device_type(),
             (world_size // devices_per_node, devices_per_node),
             mesh_dim_names=("replicate", "shard"),
         )
@@ -296,6 +285,7 @@ class BaseTrainer:
             precision_dtype=self.precision_dtype,
             world_size=self.world_size,
         )
+        fsdp_kwargs["device_id"] = self.device
         return FSDP(model, **fsdp_kwargs)
 
     def _build_train_dataloader(self, start_offset_samples=0, num_samples=None):
@@ -403,14 +393,7 @@ class BaseTrainer:
                     grad_norm=grad_norm.item(),
                 )
 
-                should_checkpoint = (
-                    self.global_step % int(self.args.logging.checkpointing_steps) == 0
-                    or (
-                        self.global_step % self.steps_per_epoch == 0
-                        and self.global_step < self.max_train_steps
-                    )
-                )
-                if should_checkpoint:
+                if self.global_step % int(self.args.logging.checkpointing_steps) == 0:
                     self.save_and_eval_checkpoint()
 
                 if self.suspend_controller.requested():
