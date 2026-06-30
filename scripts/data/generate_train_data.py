@@ -273,6 +273,10 @@ def collect_finished_results(queues, pending_results):
                 queue.remove(future)
 
 
+def count_outstanding_results(queues, pending_results):
+    return len(pending_results) + sum(len(queue) for queue in queues.values())
+
+
 def write_ready_results(
     *,
     next_write_index,
@@ -346,6 +350,7 @@ def main():
     next_server_index = 0
     next_write_index = skip_lines
     submitted_count = 0
+    max_outstanding_results = args.concurrency * len(valid_servers)
 
     with (
         open(args.input_file_path, "r", encoding="utf-8") as input_handle,
@@ -370,8 +375,12 @@ def main():
             server_address = valid_servers[next_server_index]
             next_server_index = (next_server_index + 1) % len(valid_servers)
 
-            while len(queues[server_address]) >= args.concurrency:
-                queue_len = len(queues[server_address])
+            while (
+                len(queues[server_address]) >= args.concurrency
+                or count_outstanding_results(queues, pending_results)
+                >= max_outstanding_results
+            ):
+                outstanding_count = count_outstanding_results(queues, pending_results)
                 collect_finished_results(queues, pending_results)
                 next_write_index = write_ready_results(
                     next_write_index=next_write_index,
@@ -380,7 +389,7 @@ def main():
                     error_handle=error_handle,
                     stats=stats,
                 )
-                if len(queues[server_address]) >= queue_len:
+                if count_outstanding_results(queues, pending_results) >= outstanding_count:
                     time.sleep(0.05)
 
             future = executor.submit(call_sglang, args, server_address, sample)
