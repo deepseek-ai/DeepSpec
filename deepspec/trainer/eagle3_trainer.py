@@ -1,4 +1,4 @@
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from deepspec.data import CacheCollator
 from deepspec.modeling.eagle3.gemma4 import Gemma4Eagle3Model
@@ -32,23 +32,10 @@ class Qwen3Eagle3Trainer(BaseTrainer):
         )
         draft_model = draft_model.to(device=self.device, dtype=self.precision_dtype)
 
-        target_model = AutoModelForCausalLM.from_pretrained(
-            model_args.target_model_name_or_path,
-            dtype=self.precision_dtype,
-        ).to(device="cpu").eval()
-        target_embed_tokens = target_model.get_input_embeddings()
-        target_lm_head = target_model.get_output_embeddings()
-        assert (target_lm_head is not None) and (target_embed_tokens is not None)
-
         # The draft head and norm stay frozen / target-independent to match
         # the DSpark setup: head is not trained and norm is not inherited.
-        draft_model.initialize_embeddings_and_head(
-            embed_tokens=target_embed_tokens,
-            lm_head=target_lm_head,
-            freeze=True,
-        )
+        self._initialize_embeddings_and_head_from_target(draft_model, model_args)
 
-        del target_model
         return draft_model, tokenizer
 
     def _build_draft_model(self, *, target_config, model_args):
