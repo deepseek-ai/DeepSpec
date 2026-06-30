@@ -274,23 +274,6 @@ def compute_dspark_loss(
     l1_loss_alpha = float(l1_loss_alpha)
     confidence_head_alpha = float(confidence_head_alpha)
 
-    local_ce_loss = loss_terms["ce_loss_num"] / (loss_terms["ce_loss_den"] + 1e-6)
-    local_l1_loss = local_ce_loss.new_zeros(())
-    if global_denominators["l1_loss_den"].item() > 0:
-        local_l1_loss = loss_terms["l1_loss_num"] / (
-            loss_terms["l1_loss_den"] + 1e-6
-        )
-    local_confidence_loss = local_ce_loss.new_zeros(())
-    if has_confidence:
-        local_confidence_loss = loss_terms["confidence_loss_num"] / (
-            loss_terms["confidence_loss_den"] + 1e-6
-        )
-    local_loss = (
-        ce_loss_alpha * local_ce_loss
-        + l1_loss_alpha * local_l1_loss
-        + confidence_head_alpha * local_confidence_loss
-    )
-
     add_metric(
         "ce_loss",
         loss_terms["ce_loss_num"],
@@ -311,12 +294,6 @@ def compute_dspark_loss(
             den=loss_terms["confidence_loss_den"],
             tag="train",
         )
-    add_metric(
-        "loss",
-        local_loss,
-        reduction="mean",
-        tag="train",
-    )
     backward_loss = _build_loss(
         loss_terms=loss_terms,
         global_denominators=global_denominators,
@@ -325,6 +302,12 @@ def compute_dspark_loss(
         confidence_head_alpha=confidence_head_alpha,
         has_confidence=has_confidence,
         world_size=world_size,
+    )
+    add_metric(
+        "loss",
+        backward_loss.detach(),
+        reduction="dp_mean",
+        tag="train",
     )
     return backward_loss
 
