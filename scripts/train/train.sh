@@ -27,6 +27,11 @@ export WORLD_SIZE=${WORLD_SIZE:-1}
 #   config/eagle3/eagle3_qwen3_8b.py
 #   config/eagle3/eagle3_qwen3_14b.py
 
+# The training config. Defaults to the cached DSpark Qwen3-4B config; override it by
+# passing a config path as the first argument, e.g. to use online training:
+#   bash scripts/train/train.sh config/dspark/dspark_qwen3_4b_online.py
+config_path=${1:-config/dspark/dspark_qwen3_4b.py}
+
 target_cache_dir=${target_cache_dir:-${HOME}/.cache/deepspec/qwen3_4b_target_cache}
 
 # --opts overrides any config field by dotted key path: --opts "<key.path>=<value>".
@@ -40,6 +45,8 @@ target_cache_dir=${target_cache_dir:-${HOME}/.cache/deepspec/qwen3_4b_target_cac
 # with more memory (e.g. 4 or 8 on 80GB cards), or keep it at 1 if you hit OOM.
 # Override it without editing the config via:
 #   --opts "train.local_batch_size=4"
+# data.target_cache_path is ignored by online configs (data.online_target=True), which
+# stream conversations from data.train_data_paths instead of reading a target cache.
 python train.py \
-    --config config/dspark/dspark_qwen3_4b.py \
+    --config "${config_path}" \
     --opts "data.target_cache_path=${target_cache_dir}"

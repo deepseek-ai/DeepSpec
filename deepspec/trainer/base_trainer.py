@@ -281,10 +281,13 @@ class BaseTrainer:
         # frozen draft embeddings and lm_head weights, then discards it. Online
         # training instead keeps the frozen target backbone resident so hidden
         # states can be recomputed at every step.
+        # Load on CPU first. Offline (cached) training discards this model after
+        # copying embeddings, so it must never occupy GPU memory. Online training
+        # moves only the backbone to the GPU below.
         target_model = AutoModelForCausalLM.from_pretrained(
             model_args.target_model_name_or_path,
             dtype=self.precision_dtype,
-        ).eval()
+        ).to(device="cpu").eval()
         target_embed_tokens = target_model.get_input_embeddings()
         target_lm_head = target_model.get_output_embeddings()
         assert (target_lm_head is not None) and (target_embed_tokens is not None)
