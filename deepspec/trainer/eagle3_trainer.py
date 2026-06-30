@@ -17,6 +17,13 @@ class Qwen3Eagle3Trainer(BaseTrainer):
     data_collator_cls = CacheCollator
 
     def build_models(self):
+        # Online target mode is currently implemented for DSpark only. Eagle3
+        # captures hidden states with a different (layer_id + 1) offset and
+        # overrides build_models entirely, so guard against silent misuse.
+        assert not self._online_target, (
+            "online_target is not yet supported for Eagle3 trainers; "
+            "use a precomputed target cache."
+        )
         model_args = self.args.model
 
         tokenizer = AutoTokenizer.from_pretrained(

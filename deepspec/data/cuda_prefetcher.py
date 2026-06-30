@@ -34,12 +34,21 @@ class CUDAPrefetcher:
         return self
 
     def _fetch_and_transfer(self):
-        """Pop the next CPU batch from the DataLoader and queue H2D on the side stream."""
-        try:
-            cpu_batch = next(self._iter)
-        except StopIteration:
-            self._done = True
-            return
+        """Pop the next CPU batch from the DataLoader and queue H2D on the side stream.
+
+        A collator may return ``None`` when every sample in a micro-batch is
+        filtered out (e.g. ConversationCollator dropping samples below
+        ``min_loss_tokens``). Skip such batches so downstream consumers never
+        observe ``None``.
+        """
+        while True:
+            try:
+                cpu_batch = next(self._iter)
+            except StopIteration:
+                self._done = True
+                return
+            if cpu_batch is not None:
+                break
         with torch.cuda.stream(self.stream):
             self._gpu_batch = move_batch_to_device(cpu_batch, self.device)
 
