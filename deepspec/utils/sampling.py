@@ -22,7 +22,7 @@ def sample_tokens(logits: torch.Tensor, temperature: float = 0.0) -> torch.Tenso
         return torch.argmax(logits, dim=-1)
 
     bsz, seq_len, vocab_size = logits.shape
-    flat_logits = logits.reshape(-1, vocab_size) / temperature
+    flat_logits = logits.reshape(-1, vocab_size).float() / temperature
     probs = torch.softmax(flat_logits, dim=-1)
     return torch.multinomial(probs, num_samples=1).reshape(bsz, seq_len)
 
