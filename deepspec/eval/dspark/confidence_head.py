@@ -27,6 +27,11 @@ def model_display_name(path: str) -> str:
     return os.path.basename(normalized) or normalized
 
 
+def confidence_metric_dtype(device: torch.device) -> torch.dtype:
+    device = torch.device(device)
+    return torch.float32 if device.type == "npu" else torch.float64
+
+
 class PerPositionConfidenceMetrics:
     """Per-position ECE + AUROC + Brier for cumprod predictions."""
 
@@ -41,22 +46,23 @@ class PerPositionConfidenceMetrics:
         self.block_size = int(block_size)
         self.num_coarse_bins = int(num_coarse_bins)
         self.num_fine_bins = int(num_fine_bins)
+        self.dtype = confidence_metric_dtype(device)
         self.coarse_count = torch.zeros(
             (self.block_size, self.num_coarse_bins),
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
         self.coarse_pred = torch.zeros_like(self.coarse_count)
         self.coarse_target = torch.zeros_like(self.coarse_count)
         self.fine_pos = torch.zeros(
             (self.block_size, self.num_fine_bins),
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
         self.fine_neg = torch.zeros_like(self.fine_pos)
         self.brier_num = torch.zeros(
             self.block_size,
-            dtype=torch.float64,
+            dtype=self.dtype,
             device=device,
         )
 
@@ -66,12 +72,12 @@ class PerPositionConfidenceMetrics:
         probs: torch.Tensor,
         targets: torch.Tensor,
     ) -> None:
-        probs = probs.reshape(-1).to(torch.float64).clamp(EPS_PROB, 1.0 - EPS_PROB)
-        targets = targets.reshape(-1).to(torch.float64)
+        probs = probs.reshape(-1).to(self.dtype).clamp(EPS_PROB, 1.0 - EPS_PROB)
+        targets = targets.reshape(-1).to(self.dtype)
         assert probs.shape == targets.shape
         pos_count = probs.numel()
         assert pos_count <= self.block_size
-        weights = torch.ones_like(probs, dtype=torch.float64)
+        weights = torch.ones_like(probs, dtype=self.dtype)
         pos_idx = torch.arange(pos_count, device=probs.device)
 
         coarse_idx = (
@@ -363,11 +369,11 @@ class ConfidenceHeadRecorder:
         step_probs = torch.sigmoid(
             confidence_logits[:, :effective_length]
         ).squeeze(0)
-        cumprod_pred = step_probs.to(torch.float64).cumprod(dim=0)
+        cumprod_pred = step_probs.to(self.dataset_metrics.dtype).cumprod(dim=0)
         prefix_label = (
             verification.accept_prefix_mask[:, :effective_length]
             .squeeze(0)
-            .to(torch.float64)
+            .to(self.dataset_metrics.dtype)
         )
         self.dataset_metrics.update(
             probs=cumprod_pred,

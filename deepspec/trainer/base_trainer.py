@@ -15,6 +15,8 @@ from deepspec.data.cuda_prefetcher import CUDAPrefetcher
 from deepspec.utils import (
     BF16Optimizer,
     StatelessResumableDistributedSampler,
+    device_count,
+    device_type,
     ensure_dir,
     init_dist,
     is_global_main_process,
@@ -65,9 +67,9 @@ def _build_fsdp_kwargs(
         sharding_strategy=sharding_strategy,
     )
     if sharding_strategy in _HYBRID_STRATEGIES:
-        devices_per_node = torch.cuda.device_count()
+        devices_per_node = device_count()
         fsdp_kwargs["device_mesh"] = init_device_mesh(
-            "cuda",
+            device_type(),
             (world_size // devices_per_node, devices_per_node),
             mesh_dim_names=("replicate", "shard"),
         )
@@ -283,6 +285,7 @@ class BaseTrainer:
             precision_dtype=self.precision_dtype,
             world_size=self.world_size,
         )
+        fsdp_kwargs["device_id"] = self.device
         return FSDP(model, **fsdp_kwargs)
 
     def _build_train_dataloader(self, start_offset_samples=0, num_samples=None):

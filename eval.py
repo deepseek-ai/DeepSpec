@@ -5,7 +5,7 @@ import torch
 from transformers import AutoConfig
 from deepspec.eval.dspark import Gemma4DSparkEvaluator, Qwen3DSparkEvaluator
 from deepspec.eval.eagle3 import Gemma4Eagle3Evaluator, Qwen3Eagle3Evaluator
-from deepspec.utils import CustomJSONEncoder
+from deepspec.utils import CustomJSONEncoder, device_count
 
 EVALUATORS = {
     "Qwen3DSparkModel": Qwen3DSparkEvaluator,
@@ -61,5 +61,5 @@ if __name__ == "__main__":
     torch.multiprocessing.spawn(
         main,
         args=(args,),
-        nprocs=torch.cuda.device_count(),
+        nprocs=device_count(),
     )
