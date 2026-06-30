@@ -105,6 +105,22 @@ class JsonLineDataset(torch.utils.data.Dataset):
                     continue
 
             handle = open(path, "rb")
+            if os.fstat(handle.fileno()).st_size == 0:
+                # mmap cannot map a 0-byte file; treat an empty shard as 0 records.
+                handle.close()
+                starts = []
+                self.line_starts_per_file[idx] = starts
+                self.num_data_per_file.append(0)
+                if cache_path is not None:
+                    self._atomic_pickle_dump(
+                        {
+                            "file_key": file_key,
+                            "file_path": os.path.abspath(path),
+                            "line_starts": starts,
+                        },
+                        cache_path,
+                    )
+                continue
             mm = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
             self.files[idx] = handle
             self.mmaps[idx] = mm
