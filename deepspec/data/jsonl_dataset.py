@@ -9,6 +9,7 @@ import torch
 from tqdm import tqdm
 
 CACHE_DIR = os.path.expanduser("~/.cache/deepspec")
+LINE_INDEX_CACHE_VERSION = 2
 
 
 class JsonLineDataset(torch.utils.data.Dataset):
@@ -96,6 +97,7 @@ class JsonLineDataset(torch.utils.data.Dataset):
                     cached = pickle.load(handle)
                 if (
                     isinstance(cached, dict)
+                    and cached.get("version") == LINE_INDEX_CACHE_VERSION
                     and cached.get("file_key") == file_key
                     and isinstance(cached.get("line_starts"), list)
                 ):
@@ -105,25 +107,41 @@ class JsonLineDataset(torch.utils.data.Dataset):
                     continue
 
             handle = open(path, "rb")
+            if os.path.getsize(path) == 0:
+                starts = []
+                handle.close()
+                self.line_starts_per_file[idx] = starts
+                self.num_data_per_file.append(0)
+                if cache_path is not None:
+                    self._atomic_pickle_dump(
+                        {
+                            "version": LINE_INDEX_CACHE_VERSION,
+                            "file_key": file_key,
+                            "file_path": os.path.abspath(path),
+                            "line_starts": starts,
+                        },
+                        cache_path,
+                    )
+                continue
+
             mm = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
             self.files[idx] = handle
             self.mmaps[idx] = mm
             starts = []
             mm.seek(0)
-            pos = 0
             while True:
-                starts.append(pos)
+                pos = mm.tell()
                 line = mm.readline()
                 if not line:
                     break
-                pos = mm.tell()
-            if starts and mm.size() == pos:
-                starts.pop()
+                if line.strip():
+                    starts.append(pos)
             self.line_starts_per_file[idx] = starts
             self.num_data_per_file.append(len(starts))
             if cache_path is not None:
                 self._atomic_pickle_dump(
                     {
+                        "version": LINE_INDEX_CACHE_VERSION,
                         "file_key": file_key,
                         "file_path": os.path.abspath(path),
                         "line_starts": starts,

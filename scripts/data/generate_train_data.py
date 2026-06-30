@@ -36,6 +36,8 @@ def parse_args():
 
 
 def validate_args(args):
+    if not args.output_file_path.endswith(".jsonl"):
+        raise ValueError("output-file-path must end with .jsonl")
     if not 0.0 <= args.temperature <= 1.0:
         raise ValueError("temperature must be between 0.0 and 1.0")
     if args.top_p is not None and not 0.0 <= args.top_p <= 1.0:
@@ -149,6 +151,13 @@ def count_lines(path):
         return sum(1 for _ in handle)
 
 
+def build_error_path(output_path):
+    root, ext = os.path.splitext(output_path)
+    if ext != ".jsonl":
+        raise ValueError("output-file-path must end with .jsonl")
+    return f"{root}_error.jsonl"
+
+
 def find_resume_offset(output_path, error_path):
     if not os.path.exists(output_path):
         return 0, 0, 0
@@ -231,14 +240,14 @@ def validate_servers(args):
 
 
 def write_finished_result(
-    future,
+    sample,
     output_handle,
     error_handle,
     stats,
 ):
-    sample = future.result()
     if sample["status"] == "error":
         error_handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        error_handle.flush()
         stats["errors"] += 1
         return
 
@@ -252,6 +261,36 @@ def write_finished_result(
     stats["context_max"] = max(stats["context_max"], context_length)
     stats["success"] += 1
     output_handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    output_handle.flush()
+
+
+def collect_finished_results(queues, pending_results):
+    for queue in queues.values():
+        for future in list(queue):
+            if future.done():
+                sample_index = getattr(future, "sample_index")
+                pending_results[sample_index] = future.result()
+                queue.remove(future)
+
+
+def write_ready_results(
+    *,
+    next_write_index,
+    pending_results,
+    output_handle,
+    error_handle,
+    stats,
+):
+    while next_write_index in pending_results:
+        sample = pending_results.pop(next_write_index)
+        write_finished_result(
+            sample,
+            output_handle,
+            error_handle,
+            stats,
+        )
+        next_write_index += 1
+    return next_write_index
 
 
 def print_config(args):
@@ -275,7 +314,7 @@ def main():
     print_config(args)
 
     total_lines = count_lines(args.input_file_path)
-    error_path = args.output_file_path.replace(".jsonl", "_error.jsonl")
+    error_path = build_error_path(args.output_file_path)
     skip_lines, existing_success, existing_errors = (
         find_resume_offset(args.output_file_path, error_path)
         if args.resume
@@ -303,7 +342,9 @@ def main():
         "context_max": 0,
     }
     queues = {server_address: [] for server_address in valid_servers}
+    pending_results = {}
     next_server_index = 0
+    next_write_index = skip_lines
     submitted_count = 0
 
     with (
@@ -330,26 +371,42 @@ def main():
             next_server_index = (next_server_index + 1) % len(valid_servers)
 
             while len(queues[server_address]) >= args.concurrency:
-                wrote_result = False
-                for future in list(queues[server_address]):
-                    if future.done():
-                        write_finished_result(
-                            future, output_handle, error_handle, stats
-                        )
-                        queues[server_address].remove(future)
-                        wrote_result = True
-                        break
-                if not wrote_result:
+                queue_len = len(queues[server_address])
+                collect_finished_results(queues, pending_results)
+                next_write_index = write_ready_results(
+                    next_write_index=next_write_index,
+                    pending_results=pending_results,
+                    output_handle=output_handle,
+                    error_handle=error_handle,
+                    stats=stats,
+                )
+                if len(queues[server_address]) >= queue_len:
                     time.sleep(0.05)
 
             future = executor.submit(call_sglang, args, server_address, sample)
+            future.sample_index = skip_lines + submitted_count
             queues[server_address].append(future)
             submitted_count += 1
             progress.update(1)
 
-        for server_address in valid_servers:
-            for future in queues[server_address]:
-                write_finished_result(future, output_handle, error_handle, stats)
+        while any(queues.values()):
+            collect_finished_results(queues, pending_results)
+            next_write_index = write_ready_results(
+                next_write_index=next_write_index,
+                pending_results=pending_results,
+                output_handle=output_handle,
+                error_handle=error_handle,
+                stats=stats,
+            )
+            if any(queues.values()):
+                time.sleep(0.05)
+        next_write_index = write_ready_results(
+            next_write_index=next_write_index,
+            pending_results=pending_results,
+            output_handle=output_handle,
+            error_handle=error_handle,
+            stats=stats,
+        )
         progress.close()
 
     print("Processing completed.")
