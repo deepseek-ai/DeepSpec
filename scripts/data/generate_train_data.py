@@ -36,6 +36,8 @@ def parse_args():
 
 
 def validate_args(args):
+    if not args.output_file_path.endswith(".jsonl"):
+        raise ValueError("output-file-path must end with .jsonl")
     if not 0.0 <= args.temperature <= 1.0:
         raise ValueError("temperature must be between 0.0 and 1.0")
     if args.top_p is not None and not 0.0 <= args.top_p <= 1.0:
@@ -147,6 +149,13 @@ def call_sglang(args, server_address, sample, max_tokens=None):
 def count_lines(path):
     with open(path, "r", encoding="utf-8") as handle:
         return sum(1 for _ in handle)
+
+
+def build_error_path(output_path):
+    root, ext = os.path.splitext(output_path)
+    if ext != ".jsonl":
+        raise ValueError("output-file-path must end with .jsonl")
+    return f"{root}_error.jsonl"
 
 
 def find_resume_offset(output_path, error_path):
@@ -305,7 +314,7 @@ def main():
     print_config(args)
 
     total_lines = count_lines(args.input_file_path)
-    error_path = args.output_file_path.replace(".jsonl", "_error.jsonl")
+    error_path = build_error_path(args.output_file_path)
     skip_lines, existing_success, existing_errors = (
         find_resume_offset(args.output_file_path, error_path)
         if args.resume
