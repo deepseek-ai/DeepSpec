@@ -16,13 +16,13 @@ model = dict(
     target_layer_ids=[5, 17, 29, 41, 46],
     mask_token_id=4,
     num_anchors=512,
-
+    # Enable D2-style real-token prefix features for dflash training.
+    enable_d2_feature=True,
+    d2_prefix_weight_base=0.9,
     # Disable markov head.
     markov_rank=0,
-
     # Disable confidence head.
     confidence_head_alpha=0.0,
-
     # CE-only loss.
     loss_decay_gamma=4.0,
     ce_loss_alpha=1.0,

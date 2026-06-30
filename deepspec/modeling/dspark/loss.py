@@ -28,11 +28,17 @@ def _build_loss_weight_mask(
     block_size: int,
     device: torch.device,
     loss_decay_gamma: Optional[float],
+    loss_position_offsets: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     loss_weight_mask = eval_mask.to(torch.float32)
     if loss_decay_gamma is not None and loss_decay_gamma > 0:
-        positions = torch.arange(block_size, device=device).view(1, 1, -1)
-        decay_weights = torch.exp(-positions.float() / float(loss_decay_gamma))
+        if loss_position_offsets is None:
+            loss_position_offsets = torch.arange(block_size, device=device).view(
+                1, 1, -1
+            )
+        decay_weights = torch.exp(
+            -loss_position_offsets.to(torch.float32) / float(loss_decay_gamma)
+        )
         loss_weight_mask = loss_weight_mask * decay_weights
     return loss_weight_mask
 
@@ -105,6 +111,7 @@ def _collect_local_terms(
         block_size=block_size,
         device=device,
         loss_decay_gamma=loss_decay_gamma,
+        loss_position_offsets=outputs.loss_position_offsets,
     )
     flat_logits = draft_logits.reshape(-1, vocab_size)
     flat_targets = target_ids.reshape(-1)
@@ -118,9 +125,9 @@ def _collect_local_terms(
         aligned_target_logits=aligned_target_logits,
     )
     zero = ce_loss_num.new_zeros(())
-    assert l1_loss_alpha <= 0 or aligned_target_logits is not None, (
-        "aligned_target_logits is required when l1_loss_alpha > 0."
-    )
+    assert (
+        l1_loss_alpha <= 0 or aligned_target_logits is not None
+    ), "aligned_target_logits is required when l1_loss_alpha > 0."
     if l1_loss_alpha > 0:
         l1_loss_num, l1_loss_den = _compute_local_l1_term(
             outputs=outputs,
@@ -150,34 +157,30 @@ def _collect_local_terms(
     confidence_bias_num = zero
     confidence_cumprod_bias_num = zero
     if has_confidence:
-        assert accept_rate_3d is not None, (
-            "aligned_target_logits is required when confidence head is enabled."
-        )
+        assert (
+            accept_rate_3d is not None
+        ), "aligned_target_logits is required when confidence head is enabled."
         confidence_targets = accept_rate_3d.detach()
-        confidence_errors = F.binary_cross_entropy_with_logits(
-            outputs.confidence_pred.float(),
-            confidence_targets,
-            reduction="none",
-        ) * loss_weight_mask
+        confidence_errors = (
+            F.binary_cross_entropy_with_logits(
+                outputs.confidence_pred.float(),
+                confidence_targets,
+                reduction="none",
+            )
+            * loss_weight_mask
+        )
         confidence_loss_num = confidence_errors.sum()
         confidence_loss_den = loss_weight_mask.sum()
         with torch.no_grad():
             confidence_probs = outputs.confidence_pred.float().sigmoid()
             confidence_error = confidence_probs - accept_rate_3d
-            confidence_abs_error_num = (
-                confidence_error.abs() * loss_weight_mask
-            ).sum()
+            confidence_abs_error_num = (confidence_error.abs() * loss_weight_mask).sum()
             confidence_bias_num = (confidence_error * loss_weight_mask).sum()
             valid_mask = outputs.eval_mask.to(torch.float32)
-            confidence_prefix_probs = (
-                confidence_probs * valid_mask
-            ).cumprod(dim=-1)
-            confidence_prefix_targets = (
-                accept_rate_3d * valid_mask
-            ).cumprod(dim=-1)
+            confidence_prefix_probs = (confidence_probs * valid_mask).cumprod(dim=-1)
+            confidence_prefix_targets = (accept_rate_3d * valid_mask).cumprod(dim=-1)
             confidence_cumprod_bias_num = (
-                (confidence_prefix_probs - confidence_prefix_targets)
-                * loss_weight_mask
+                (confidence_prefix_probs - confidence_prefix_targets) * loss_weight_mask
             ).sum()
 
     loss_terms = {
@@ -277,9 +280,7 @@ def compute_dspark_loss(
     local_ce_loss = loss_terms["ce_loss_num"] / (loss_terms["ce_loss_den"] + 1e-6)
     local_l1_loss = local_ce_loss.new_zeros(())
     if global_denominators["l1_loss_den"].item() > 0:
-        local_l1_loss = loss_terms["l1_loss_num"] / (
-            loss_terms["l1_loss_den"] + 1e-6
-        )
+        local_l1_loss = loss_terms["l1_loss_num"] / (loss_terms["l1_loss_den"] + 1e-6)
     local_confidence_loss = local_ce_loss.new_zeros(())
     if has_confidence:
         local_confidence_loss = loss_terms["confidence_loss_num"] / (

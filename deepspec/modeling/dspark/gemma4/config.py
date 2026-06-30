@@ -44,9 +44,9 @@ def _validate_required_text_fields(text_config) -> None:
         "use_double_wide_mlp",
     )
     for field in required_fields:
-        assert hasattr(text_config, field), (
-            f"target_config.text_config.{field} must be provided."
-        )
+        assert hasattr(
+            text_config, field
+        ), f"target_config.text_config.{field} must be provided."
 
 
 def build_draft_config(target_config, model_args):
@@ -75,9 +75,9 @@ def build_draft_config(target_config, model_args):
     markov_rank = int(model_args.markov_rank)
     assert markov_rank >= 0, f"markov_rank must be >= 0, got {markov_rank}"
     if markov_rank > 0:
-        assert "markov_head_type" in model_args, (
-            "markov_head_type must be provided when markov_rank > 0."
-        )
+        assert (
+            "markov_head_type" in model_args
+        ), "markov_head_type must be provided when markov_rank > 0."
 
     draft_config.architectures = ["Gemma4DSparkModel"]
     draft_config.target_model_type = str(target_config.model_type)
@@ -91,6 +91,16 @@ def build_draft_config(target_config, model_args):
     draft_config.mask_token_id = int(model_args.mask_token_id)
     draft_config.target_layer_ids = target_layer_ids
     draft_config.num_anchors = int(model_args.num_anchors)
+    draft_config.enable_d2_feature = bool(
+        getattr(model_args, "enable_d2_feature", False)
+    )
+    draft_config.d2_prefix_weight_base = float(
+        getattr(model_args, "d2_prefix_weight_base", 0.9)
+    )
+    assert draft_config.d2_prefix_weight_base > 0.0, (
+        "d2_prefix_weight_base must be positive, "
+        f"got {draft_config.d2_prefix_weight_base}"
+    )
     draft_config.enable_confidence_head = enable_confidence_head
     if enable_confidence_head:
         draft_config.confidence_head_with_markov = bool(

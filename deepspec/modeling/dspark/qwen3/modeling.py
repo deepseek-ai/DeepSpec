@@ -20,13 +20,16 @@ from typing_extensions import Tuple, Unpack
 from deepspec.modeling.dspark.common import (
     AcceptRatePredictor,
     DSparkForwardOutput,
+    build_d2_eval_mask,
     build_eval_mask,
+    create_d2_noise_embed,
     create_dspark_attention_mask,
     create_noise_embed,
     create_position_ids,
     extract_context_feature,
     log_sampler_stats,
     sample_anchor_positions,
+    sample_d2_prefix_lengths,
 )
 from deepspec.modeling.dspark.markov_head import build_markov_head
 from deepspec.utils.sampling import sample_tokens
@@ -51,9 +54,7 @@ class Qwen3DSparkAttention(nn.Module):
         )
         self.num_attention_heads = config.num_attention_heads
         self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = (
-            self.num_attention_heads // self.num_key_value_heads
-        )
+        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = False
@@ -173,11 +174,11 @@ class Qwen3DSparkDecoderLayer(GradientCheckpointingLayer):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[
-            Tuple[torch.Tensor, torch.Tensor]
-        ] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> Tuple[
+        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
+    ]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states = self.self_attn(
@@ -215,9 +216,9 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
         for field in required_fields:
             assert hasattr(config, field), f"config.{field} must be provided."
         if int(config.markov_rank) > 0:
-            assert hasattr(config, "markov_head_type"), (
-                "config.markov_head_type must be provided when markov_rank > 0."
-            )
+            assert hasattr(
+                config, "markov_head_type"
+            ), "config.markov_head_type must be provided when markov_rank > 0."
         if bool(config.enable_confidence_head):
             assert hasattr(config, "confidence_head_with_markov"), (
                 "config.confidence_head_with_markov must be provided when "
@@ -248,6 +249,14 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
         self.block_size = int(config.block_size)
         self.mask_token_id = config.mask_token_id
         self.num_anchors = int(config.num_anchors)
+        self.enable_d2_feature = bool(getattr(config, "enable_d2_feature", False))
+        self.d2_prefix_weight_base = float(
+            getattr(config, "d2_prefix_weight_base", 0.9)
+        )
+        assert self.d2_prefix_weight_base > 0.0, (
+            "d2_prefix_weight_base must be positive, "
+            f"got {self.d2_prefix_weight_base}"
+        )
 
         # Markov head.
         self.markov_head = build_markov_head(config)
@@ -402,15 +411,36 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
             num_anchors=self.num_anchors,
             device=device,
         )
-        noise_embedding = create_noise_embed(
-            self.embed_tokens,
-            input_ids,
-            anchor_positions,
-            block_keep_mask,
-            mask_token_id=self.mask_token_id,
-            block_size=self.block_size,
+        prefix_lengths = None
+        if self.enable_d2_feature:
+            prefix_lengths = sample_d2_prefix_lengths(
+                bsz=bsz,
+                num_blocks=anchor_positions.size(1),
+                block_size=self.block_size,
+                prefix_weight_base=self.d2_prefix_weight_base,
+                device=device,
+            )
+            noise_embedding = create_d2_noise_embed(
+                self.embed_tokens,
+                input_ids,
+                anchor_positions,
+                block_keep_mask,
+                prefix_lengths,
+                mask_token_id=self.mask_token_id,
+                block_size=self.block_size,
+            )
+        else:
+            noise_embedding = create_noise_embed(
+                self.embed_tokens,
+                input_ids,
+                anchor_positions,
+                block_keep_mask,
+                mask_token_id=self.mask_token_id,
+                block_size=self.block_size,
+            )
+        context_position_ids = (
+            torch.arange(seq_len, device=device).unsqueeze(0).expand(bsz, -1)
         )
-        context_position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(bsz, -1)
         draft_position_ids = create_position_ids(anchor_positions, self.block_size)
         full_position_ids = torch.cat([context_position_ids, draft_position_ids], dim=1)
         dspark_attn_mask = create_dspark_attention_mask(
@@ -430,9 +460,14 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
         num_blocks = anchor_positions.size(1)
         output_hidden_4d = output_hidden.reshape(bsz, num_blocks, self.block_size, -1)
 
-        label_offsets = torch.arange(1, self.block_size + 1, device=device).view(
-            1, 1, -1
-        )
+        if self.enable_d2_feature:
+            label_offsets = torch.arange(0, self.block_size, device=device).view(
+                1, 1, -1
+            )
+        else:
+            label_offsets = torch.arange(1, self.block_size + 1, device=device).view(
+                1, 1, -1
+            )
         label_indices = anchor_positions.unsqueeze(-1) + label_offsets
         safe_label_indices = label_indices.clamp(max=seq_len - 1)
         safe_label_indices = torch.where(
@@ -464,13 +499,29 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
                 ),
             )
             aligned_target_logits = self.compute_logits(aligned_target_hidden)
-        eval_mask = build_eval_mask(
-            seq_len=seq_len,
-            loss_mask=loss_mask,
-            label_indices=label_indices,
-            safe_label_indices=safe_label_indices,
-            block_keep_mask=block_keep_mask,
-        )
+        loss_position_offsets = None
+        if self.enable_d2_feature:
+            assert prefix_lengths is not None
+            eval_mask = build_d2_eval_mask(
+                seq_len=seq_len,
+                loss_mask=loss_mask,
+                label_indices=label_indices,
+                safe_label_indices=safe_label_indices,
+                block_keep_mask=block_keep_mask,
+                prefix_lengths=prefix_lengths,
+            )
+            pos_in_block = torch.arange(self.block_size, device=device).view(1, 1, -1)
+            loss_position_offsets = (pos_in_block - prefix_lengths.unsqueeze(-1)).clamp(
+                min=0
+            )
+        else:
+            eval_mask = build_eval_mask(
+                seq_len=seq_len,
+                loss_mask=loss_mask,
+                label_indices=label_indices,
+                safe_label_indices=safe_label_indices,
+                block_keep_mask=block_keep_mask,
+            )
         anchor_token_ids = torch.gather(
             input_ids,
             1,
@@ -505,9 +556,9 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
         confidence_pred = None
         if self.confidence_head is not None:
             if self.confidence_head_with_markov:
-                prev_embeddings = self.markov_head.get_prev_embeddings(prev_token_ids).to(
-                    dtype=output_hidden_4d.dtype
-                )
+                prev_embeddings = self.markov_head.get_prev_embeddings(
+                    prev_token_ids
+                ).to(dtype=output_hidden_4d.dtype)
                 confidence_features = torch.cat(
                     [output_hidden_4d, prev_embeddings],
                     dim=-1,
@@ -523,6 +574,7 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
             block_keep_mask=block_keep_mask,
             confidence_pred=confidence_pred,
             aligned_target_logits=aligned_target_logits,
+            loss_position_offsets=loss_position_offsets,
         )
 
 

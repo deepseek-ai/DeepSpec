@@ -20,13 +20,16 @@ from transformers.models.gemma4.modeling_gemma4 import (
 from deepspec.modeling.dspark.common import (
     AcceptRatePredictor,
     DSparkForwardOutput,
+    build_d2_eval_mask,
     build_eval_mask,
+    create_d2_noise_embed,
     create_dspark_attention_mask,
     create_noise_embed,
     create_position_ids,
     extract_context_feature,
     log_sampler_stats,
     sample_anchor_positions,
+    sample_d2_prefix_lengths,
 )
 from deepspec.modeling.dspark.markov_head import build_markov_head
 from deepspec.utils.sampling import sample_tokens
@@ -45,9 +48,9 @@ class Gemma4DSparkAttention(nn.Module):
         else:
             self.num_key_value_heads = int(config.num_key_value_heads)
         self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-        assert self.num_attention_heads % self.num_key_value_heads == 0, (
-            "num_attention_heads must be divisible by the Gemma4 key/value head count."
-        )
+        assert (
+            self.num_attention_heads % self.num_key_value_heads == 0
+        ), "num_attention_heads must be divisible by the Gemma4 key/value head count."
         self.scaling = 1.0
         self.attention_dropout = float(config.attention_dropout)
         self.is_causal = False
@@ -173,12 +176,12 @@ class Gemma4DSparkDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        assert not bool(config.enable_moe_block), (
-            "Gemma4 DSpark prototype does not support Gemma4 MoE blocks yet."
-        )
-        assert int(config.hidden_size_per_layer_input) == 0, (
-            "Gemma4 DSpark prototype does not support per-layer input gates yet."
-        )
+        assert not bool(
+            config.enable_moe_block
+        ), "Gemma4 DSpark prototype does not support Gemma4 MoE blocks yet."
+        assert (
+            int(config.hidden_size_per_layer_input) == 0
+        ), "Gemma4 DSpark prototype does not support per-layer input gates yet."
         self.self_attn = Gemma4DSparkAttention(config=config, layer_idx=layer_idx)
         self.mlp = Gemma4TextMLP(config, layer_idx)
         self.input_layernorm = Gemma4RMSNorm(
@@ -214,9 +217,9 @@ class Gemma4DSparkDecoderLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         del position_ids, output_attentions, use_cache
         assert hidden_states is not None, "hidden_states must be provided."
-        assert target_hidden_states is not None, (
-            "target_hidden_states must be provided."
-        )
+        assert (
+            target_hidden_states is not None
+        ), "target_hidden_states must be provided."
         assert position_embeddings is not None, "position_embeddings must be provided."
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -260,9 +263,9 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
         for field in required_fields:
             assert hasattr(config, field), f"config.{field} must be provided."
         if int(config.markov_rank) > 0:
-            assert hasattr(config, "markov_head_type"), (
-                "config.markov_head_type must be provided when markov_rank > 0."
-            )
+            assert hasattr(
+                config, "markov_head_type"
+            ), "config.markov_head_type must be provided when markov_rank > 0."
         if bool(config.enable_confidence_head):
             assert hasattr(config, "confidence_head_with_markov"), (
                 "config.confidence_head_with_markov must be provided when "
@@ -300,6 +303,14 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
         self.block_size = int(config.block_size)
         self.mask_token_id = config.mask_token_id
         self.num_anchors = int(config.num_anchors)
+        self.enable_d2_feature = bool(getattr(config, "enable_d2_feature", False))
+        self.d2_prefix_weight_base = float(
+            getattr(config, "d2_prefix_weight_base", 0.9)
+        )
+        assert self.d2_prefix_weight_base > 0.0, (
+            "d2_prefix_weight_base must be positive, "
+            f"got {self.d2_prefix_weight_base}"
+        )
 
         self.markov_head = build_markov_head(config)
 
@@ -342,9 +353,9 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
         softcap = getattr(self.config, "final_logit_softcapping", None)
         if softcap is not None:
             softcap = float(softcap)
-            assert softcap > 0.0, (
-                "config.final_logit_softcapping must be positive when provided."
-            )
+            assert (
+                softcap > 0.0
+            ), "config.final_logit_softcapping must be positive when provided."
             logits = torch.tanh(logits / softcap) * softcap
         return logits
 
@@ -464,17 +475,40 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
             num_anchors=self.num_anchors,
             device=device,
         )
-        noise_embedding = create_noise_embed(
-            self.embed_tokens,
-            input_ids,
-            anchor_positions,
-            block_keep_mask,
-            mask_token_id=self.mask_token_id,
-            block_size=self.block_size,
-        )
-        context_position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(
-            bsz,
-            -1,
+        prefix_lengths = None
+        if self.enable_d2_feature:
+            prefix_lengths = sample_d2_prefix_lengths(
+                bsz=bsz,
+                num_blocks=anchor_positions.size(1),
+                block_size=self.block_size,
+                prefix_weight_base=self.d2_prefix_weight_base,
+                device=device,
+            )
+            noise_embedding = create_d2_noise_embed(
+                self.embed_tokens,
+                input_ids,
+                anchor_positions,
+                block_keep_mask,
+                prefix_lengths,
+                mask_token_id=self.mask_token_id,
+                block_size=self.block_size,
+            )
+        else:
+            noise_embedding = create_noise_embed(
+                self.embed_tokens,
+                input_ids,
+                anchor_positions,
+                block_keep_mask,
+                mask_token_id=self.mask_token_id,
+                block_size=self.block_size,
+            )
+        context_position_ids = (
+            torch.arange(seq_len, device=device)
+            .unsqueeze(0)
+            .expand(
+                bsz,
+                -1,
+            )
         )
         draft_position_ids = create_position_ids(anchor_positions, self.block_size)
         full_position_ids = torch.cat([context_position_ids, draft_position_ids], dim=1)
@@ -500,11 +534,18 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
             -1,
         )
 
-        label_offsets = torch.arange(1, self.block_size + 1, device=device).view(
-            1,
-            1,
-            -1,
-        )
+        if self.enable_d2_feature:
+            label_offsets = torch.arange(0, self.block_size, device=device).view(
+                1,
+                1,
+                -1,
+            )
+        else:
+            label_offsets = torch.arange(1, self.block_size + 1, device=device).view(
+                1,
+                1,
+                -1,
+            )
         label_indices = anchor_positions.unsqueeze(-1) + label_offsets
         safe_label_indices = label_indices.clamp(max=seq_len - 1)
         safe_label_indices = torch.where(
@@ -536,13 +577,29 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
                 ),
             )
             aligned_target_logits = self.compute_logits(aligned_target_hidden)
-        eval_mask = build_eval_mask(
-            seq_len=seq_len,
-            loss_mask=loss_mask,
-            label_indices=label_indices,
-            safe_label_indices=safe_label_indices,
-            block_keep_mask=block_keep_mask,
-        )
+        loss_position_offsets = None
+        if self.enable_d2_feature:
+            assert prefix_lengths is not None
+            eval_mask = build_d2_eval_mask(
+                seq_len=seq_len,
+                loss_mask=loss_mask,
+                label_indices=label_indices,
+                safe_label_indices=safe_label_indices,
+                block_keep_mask=block_keep_mask,
+                prefix_lengths=prefix_lengths,
+            )
+            pos_in_block = torch.arange(self.block_size, device=device).view(1, 1, -1)
+            loss_position_offsets = (pos_in_block - prefix_lengths.unsqueeze(-1)).clamp(
+                min=0
+            )
+        else:
+            eval_mask = build_eval_mask(
+                seq_len=seq_len,
+                loss_mask=loss_mask,
+                label_indices=label_indices,
+                safe_label_indices=safe_label_indices,
+                block_keep_mask=block_keep_mask,
+            )
         anchor_token_ids = torch.gather(
             input_ids,
             1,
@@ -595,6 +652,7 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
             block_keep_mask=block_keep_mask,
             confidence_pred=confidence_pred,
             aligned_target_logits=aligned_target_logits,
+            loss_position_offsets=loss_position_offsets,
         )
 
 

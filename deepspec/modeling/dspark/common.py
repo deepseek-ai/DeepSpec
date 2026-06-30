@@ -38,6 +38,8 @@ class DSparkForwardOutput:
     confidence_pred: Optional[torch.Tensor] = None
     # [batch_size, num_anchors, block_size, vocab_size]
     aligned_target_logits: Optional[torch.Tensor] = None
+    # [batch_size, num_anchors, block_size]
+    loss_position_offsets: Optional[torch.Tensor] = None
 
 
 class AcceptRatePredictor(nn.Module):
@@ -51,7 +53,10 @@ class AcceptRatePredictor(nn.Module):
 
 def extract_context_feature(hidden_states, layer_ids):
     return torch.cat(
-        [hidden_states[0 if layer_id == -1 else layer_id + 1] for layer_id in layer_ids],
+        [
+            hidden_states[0 if layer_id == -1 else layer_id + 1]
+            for layer_id in layer_ids
+        ],
         dim=-1,
     )
 
@@ -68,9 +73,9 @@ def validate_target_layer_ids(layer_ids, num_target_layers: int):
             f"for num_target_layers={num_target_layers}. "
             "-1 denotes the embedding output."
         )
-        assert previous is None or layer_id > previous, (
-            "target_layer_ids must be strictly increasing."
-        )
+        assert (
+            previous is None or layer_id > previous
+        ), "target_layer_ids must be strictly increasing."
         previous = layer_id
     return layer_ids
 
@@ -140,9 +145,13 @@ def sample_anchor_positions(
         keep_mask = torch.zeros(bsz, max_n, dtype=torch.bool, device=device)
         return anchors, keep_mask
 
-    indices = torch.arange(num_candidates, device=device).unsqueeze(0).expand(
-        bsz,
-        -1,
+    indices = (
+        torch.arange(num_candidates, device=device)
+        .unsqueeze(0)
+        .expand(
+            bsz,
+            -1,
+        )
     )
     masked_indices = torch.where(
         valid,
@@ -282,9 +291,13 @@ def create_noise_embed(
     block_starts = torch.arange(num_blocks, device=device) * block_size
     block_starts = block_starts.unsqueeze(0).expand(bsz, -1)
     anchor_tokens = torch.gather(input_ids, 1, anchor_positions)
-    flat_batch_idx = torch.arange(bsz, device=device).unsqueeze(1).expand(
-        bsz,
-        num_blocks,
+    flat_batch_idx = (
+        torch.arange(bsz, device=device)
+        .unsqueeze(1)
+        .expand(
+            bsz,
+            num_blocks,
+        )
     )
     noise_ids[flat_batch_idx, block_starts] = torch.where(
         block_keep_mask,
@@ -292,6 +305,90 @@ def create_noise_embed(
         torch.tensor(mask_token_id, dtype=torch.long, device=device),
     )
     return embed_tokens(noise_ids)
+
+
+def sample_d2_prefix_lengths(
+    *,
+    bsz: int,
+    num_blocks: int,
+    block_size: int,
+    prefix_weight_base: float,
+    device: torch.device,
+) -> torch.Tensor:
+    min_prefix = min(2, int(block_size) - 1)
+    max_prefix = int(block_size) - 1
+    if max_prefix <= min_prefix:
+        return torch.full(
+            (bsz, num_blocks),
+            min_prefix,
+            dtype=torch.long,
+            device=device,
+        )
+
+    prefix_ids = torch.arange(min_prefix, max_prefix + 1, device=device)
+    weights = torch.pow(
+        torch.full_like(prefix_ids, float(prefix_weight_base), dtype=torch.float32),
+        prefix_ids.float(),
+    )
+    sample_indices = torch.multinomial(
+        weights,
+        num_samples=bsz * num_blocks,
+        replacement=True,
+    ).reshape(bsz, num_blocks)
+    return prefix_ids[sample_indices]
+
+
+def create_d2_noise_embed(
+    embed_tokens: nn.Module,
+    input_ids: torch.Tensor,
+    anchor_positions: torch.Tensor,
+    block_keep_mask: torch.Tensor,
+    prefix_lengths: torch.Tensor,
+    *,
+    mask_token_id: int,
+    block_size: int,
+) -> torch.Tensor:
+    bsz, seq_len = input_ids.shape
+    num_blocks = anchor_positions.shape[1]
+    device = input_ids.device
+    offsets = torch.arange(block_size, device=device).view(1, 1, -1)
+    token_positions = anchor_positions.unsqueeze(-1) + offsets
+    safe_positions = token_positions.clamp(max=seq_len - 1)
+    real_tokens = torch.gather(
+        input_ids.unsqueeze(1).expand(-1, num_blocks, -1),
+        2,
+        safe_positions,
+    )
+    visible_prefix = offsets < prefix_lengths.unsqueeze(-1)
+    valid_positions = token_positions < seq_len
+    fill_mask = visible_prefix & block_keep_mask.unsqueeze(-1) & valid_positions
+    mask_tokens = torch.full_like(real_tokens, mask_token_id)
+    noise_ids = torch.where(fill_mask, real_tokens, mask_tokens)
+    return embed_tokens(noise_ids.reshape(bsz, num_blocks * block_size))
+
+
+def build_d2_eval_mask(
+    *,
+    seq_len: int,
+    loss_mask: torch.Tensor,
+    label_indices: torch.Tensor,
+    safe_label_indices: torch.Tensor,
+    block_keep_mask: torch.Tensor,
+    prefix_lengths: torch.Tensor,
+) -> torch.Tensor:
+    pos_in_block = torch.arange(label_indices.size(-1), device=label_indices.device)
+    pos_in_block = pos_in_block.view(1, 1, -1)
+    loss_position_mask = pos_in_block >= prefix_lengths.unsqueeze(-1)
+    target_valid = label_indices < seq_len
+    target_loss_mask = torch.gather(
+        loss_mask.unsqueeze(1).expand(-1, label_indices.size(1), -1),
+        2,
+        safe_label_indices,
+    )
+    target_valid = target_valid & (target_loss_mask > 0.5)
+    target_valid = target_valid & block_keep_mask.unsqueeze(-1)
+    contiguous_mask = (target_valid | ~loss_position_mask).to(torch.int32)
+    return contiguous_mask.cumprod(dim=-1).bool() & loss_position_mask
 
 
 __all__ = [
@@ -306,4 +403,7 @@ __all__ = [
     "log_sampler_stats",
     "create_position_ids",
     "create_noise_embed",
+    "sample_d2_prefix_lengths",
+    "create_d2_noise_embed",
+    "build_d2_eval_mask",
 ]

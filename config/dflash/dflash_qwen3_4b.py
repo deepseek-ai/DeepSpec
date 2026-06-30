@@ -1,5 +1,6 @@
 import os
 from deepspec.trainer import Qwen3DSparkTrainer
+
 BASE_TB_DIR = os.path.expanduser("~/tensorboard")
 BASE_CKPT_DIR = os.path.expanduser("~/checkpoints")
 project_name = "deepspec"
@@ -13,13 +14,13 @@ model = dict(
     target_layer_ids=[1, 9, 17, 25, 33],
     mask_token_id=151669,
     num_anchors=512,
-
+    # Enable D2-style real-token prefix features for dflash training.
+    enable_d2_feature=True,
+    d2_prefix_weight_base=0.9,
     # Disable markov head.
     markov_rank=0,
-
     # Disable confidence head.
     confidence_head_alpha=0.0,
-
     # CE-only loss.
     loss_decay_gamma=4.0,
     ce_loss_alpha=1.0,
@@ -56,7 +57,7 @@ data = dict(
 
 def finalize_cfg(cfg):
     logging_cfg = dict(cfg["logging"])
-    project_name=str(cfg['project_name'])
+    project_name = str(cfg["project_name"])
     exp_name = str(cfg["exp_name"])
     logging_cfg["checkpoint_dir"] = os.path.join(BASE_CKPT_DIR, project_name, exp_name)
     logging_cfg["tensorboard_dir"] = os.path.join(BASE_TB_DIR, project_name, exp_name)
