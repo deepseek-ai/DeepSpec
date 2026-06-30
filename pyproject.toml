@@ -1,0 +1,45 @@
+[project]
+name = "deepspec"
+version = "0.0.0"
+description = "Training and evaluation codebase for speculative-decoding draft models (DSpark, DFlash, Eagle3)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+
+dependencies = [
+    "numpy==2.4.4",
+    "torch==2.9.1",
+    "triton==3.5.1; sys_platform == 'linux'",
+    "sentencepiece==0.2.1",
+    "transformers==5.10.2",
+    "safetensors",
+    "tqdm",
+    "PyYAML",
+    "tensorboard",
+    "matplotlib",
+    "typing_extensions",
+]
+
+[project.optional-dependencies]
+# Data-preparation pipeline: regenerating target answers and building caches.
+data = [
+    "openai",
+    "datasets",
+]
+
+[project.urls]
+Repository = "https://github.com/deepseek-ai/DeepSpec"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["deepspec*"]
