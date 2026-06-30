@@ -1,6 +1,5 @@
 from contextlib import nullcontext
 import math
-import os
 
 import torch
 import torch.distributed as dist
