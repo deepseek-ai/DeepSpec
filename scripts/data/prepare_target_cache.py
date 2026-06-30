@@ -149,6 +149,13 @@ def parse_args():
     parser.add_argument("--max-shard-bytes", type=int, default=64 * 1024**3)
     parser.add_argument("--local-batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--hidden-dtype",
+        type=str,
+        default="bfloat16",
+        choices=["bfloat16", "float8_e4m3fn", "float8_e5m2"],
+        help="Data type for saving target cached hidden states."
+    )
     cli_args = parser.parse_args()
     config = parse_opts_to_config(cli_args.opts, load_config(cli_args.config))
     return cli_args, config
@@ -163,6 +170,7 @@ def _write_manifest(
     hidden_size: int,
     min_loss_tokens: int,
     shards,
+    hidden_dtype: str = "bfloat16",
 ):
     num_samples = sum(
         int(
@@ -177,6 +185,7 @@ def _write_manifest(
         shards=shards,
         target_layer_ids=target_layer_ids,
         hidden_size=hidden_size,
+        hidden_dtype=hidden_dtype,
         extra_fields={
             "target_model_name_or_path": str(config.model.target_model_name_or_path),
             "source_jsonl_paths": [str(path) for path in train_data_paths],
@@ -275,6 +284,7 @@ def main(local_rank: int):
         rank_dir=rank_dir,
         max_shard_bytes=int(cli_args.max_shard_bytes),
         max_queue_size=int(cli_args.local_batch_size) * 4,
+        hidden_dtype=cli_args.hidden_dtype,
     )
 
     processed_local_samples = 0
@@ -385,6 +395,7 @@ def main(local_rank: int):
             hidden_size=target_hidden_size,
             min_loss_tokens=min_loss_tokens,
             shards=shards,
+            hidden_dtype=cli_args.hidden_dtype,
         )
         cleanup_target_cache_tmp_dir(output_dir)
         print_on_global_main(
