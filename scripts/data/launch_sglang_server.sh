@@ -5,15 +5,27 @@ set -euo pipefail
 #   pip install "sglang[all]"
 # See https://docs.sglang.ai/get_started/install.html for details.
 
-model_path=Qwen/Qwen3-4B
-num_workers=8
-start_port=30000
-start_nccl_port=31000
-host=0.0.0.0
-dtype=bfloat16
-mem_frac=0.9
-log_dir=logs/sglang_qwen3_4b
-heartbeat_interval=300
+model_path=${model_path:-Qwen/Qwen3-4B}
+gpu_list=${gpu_list:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}
+IFS=',' read -r -a gpu_ids <<< "${gpu_list}"
+num_workers=${num_workers:-${#gpu_ids[@]}}
+start_port=${start_port:-30000}
+start_nccl_port=${start_nccl_port:-31000}
+host=${host:-0.0.0.0}
+dtype=${dtype:-bfloat16}
+mem_frac=${mem_frac:-0.9}
+log_dir=${log_dir:-logs/sglang_qwen3_4b}
+heartbeat_interval=${heartbeat_interval:-300}
+
+if (( num_workers < 1 )); then
+    echo "num_workers must be at least 1" >&2
+    exit 1
+fi
+
+if (( num_workers > ${#gpu_ids[@]} )); then
+    echo "num_workers (${num_workers}) cannot exceed available GPUs in gpu_list (${gpu_list})" >&2
+    exit 1
+fi
 
 get_host_ip() {
     local host_ip=""
@@ -93,13 +105,15 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-for ((gpu_id = 0; gpu_id < num_workers; gpu_id++)); do
-    port=$((start_port + gpu_id))
-    nccl_port=$((start_nccl_port + gpu_id))
-    log_file=${log_dir}/worker_${host_ip}_gpu_${gpu_id}_port_${port}.log
+for ((worker_id = 0; worker_id < num_workers; worker_id++)); do
+    gpu_id=${gpu_ids[$worker_id]}
+    gpu_log_id=${gpu_id//\//_}
+    port=$((start_port + worker_id))
+    nccl_port=$((start_nccl_port + worker_id))
+    log_file=${log_dir}/worker_${host_ip}_gpu_${gpu_log_id}_port_${port}.log
 
-    echo "Starting sglang worker ip=${host_ip} gpu=${gpu_id} port=${port} nccl_port=${nccl_port} log=${log_file}"
-    CUDA_VISIBLE_DEVICES=${gpu_id} sglang serve \
+    echo "Starting sglang worker ip=${host_ip} worker=${worker_id} gpu=${gpu_id} port=${port} nccl_port=${nccl_port} log=${log_file}"
+    CUDA_VISIBLE_DEVICES="${gpu_id}" sglang serve \
         --model-path "${model_path}" \
         --host "${host}" \
         --port "${port}" \
@@ -113,10 +127,11 @@ for ((gpu_id = 0; gpu_id < num_workers; gpu_id++)); do
 done
 
 echo "Workers launched:"
-for ((gpu_id = 0; gpu_id < num_workers; gpu_id++)); do
-    port=$((start_port + gpu_id))
-    nccl_port=$((start_nccl_port + gpu_id))
-    echo "  http://${host_ip}:${port} nccl_port=${nccl_port}"
+for ((worker_id = 0; worker_id < num_workers; worker_id++)); do
+    gpu_id=${gpu_ids[$worker_id]}
+    port=$((start_port + worker_id))
+    nccl_port=$((start_nccl_port + worker_id))
+    echo "  worker=${worker_id} gpu=${gpu_id} http://${host_ip}:${port} nccl_port=${nccl_port}"
 done
 echo "Heartbeat interval: ${heartbeat_interval}s"
 print_heartbeat
