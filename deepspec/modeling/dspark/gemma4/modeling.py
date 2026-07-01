@@ -483,6 +483,8 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
             seq_len=seq_len,
             block_size=self.block_size,
             device=device,
+            attn_implementation=self.config._attn_implementation,
+            dtype=noise_embedding.dtype,
         )
         output_hidden = self._forward_backbone(
             position_ids=full_position_ids,
