@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepspec"
+version = "0.1.0"
+description = "A full-stack codebase for training and evaluating speculative decoding algorithms"
+readme = "README.md"
+authors = [
+    { name = "DeepSeek AI" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "numpy>=1.20.0",
+    "PyYAML>=6.0",
+    "tqdm>=4.60.0",
+    "tensorboard>=2.10.0",
+    "matplotlib>=3.5.0",
+    "typing_extensions>=4.0.0",
+    "sentencepiece>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "pytest>=7.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = []
