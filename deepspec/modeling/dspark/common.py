@@ -82,28 +82,67 @@ def create_dspark_attention_mask(
     seq_len: int,
     block_size: int,
     device: torch.device,
+    attn_implementation: str = "flex_attention",
+    dtype: torch.dtype = torch.float32,
 ):
-    def dspark_mask_mod(b, h, q_idx, kv_idx):
-        del h
-        q_block_id = q_idx // block_size
-        anchor_pos = anchor_positions[b, q_block_id]
-        is_context = kv_idx < seq_len
-        mask_context = is_context & (kv_idx < anchor_pos)
-        is_draft = kv_idx >= seq_len
-        kv_block_id = (kv_idx - seq_len) // block_size
-        mask_draft = is_draft & (q_block_id == kv_block_id)
-        is_valid_block = block_keep_mask[b, q_block_id]
-        return (mask_context | mask_draft) & is_valid_block
-
     bsz, num_blocks = anchor_positions.shape
-    return create_block_mask(
-        dspark_mask_mod,
-        B=bsz,
-        H=None,
-        Q_LEN=num_blocks * block_size,
-        KV_LEN=seq_len + num_blocks * block_size,
-        device=device,
+    q_len = num_blocks * block_size
+    kv_len = seq_len + num_blocks * block_size
+
+    if attn_implementation == "flex_attention":
+        def dspark_mask_mod(b, h, q_idx, kv_idx):
+            del h
+            q_block_id = q_idx // block_size
+            anchor_pos = anchor_positions[b, q_block_id]
+            is_context = kv_idx < seq_len
+            mask_context = is_context & (kv_idx < anchor_pos)
+            is_draft = kv_idx >= seq_len
+            kv_block_id = (kv_idx - seq_len) // block_size
+            mask_draft = is_draft & (q_block_id == kv_block_id)
+            is_valid_block = block_keep_mask[b, q_block_id]
+            return (mask_context | mask_draft) & is_valid_block
+
+        return create_block_mask(
+            dspark_mask_mod,
+            B=bsz,
+            H=None,
+            Q_LEN=q_len,
+            KV_LEN=kv_len,
+            device=device,
+        )
+
+    # Dense additive mask for the eager / sdpa attention paths. flex_attention's
+    # kernel needs more shared memory than consumer GPUs (e.g. Ada/Ampere) offer,
+    # so those setups select a non-flex implementation and need a materialized
+    # [B, 1, Q, KV] additive mask. The logic below mirrors dspark_mask_mod above.
+    q_idx = torch.arange(q_len, device=device)
+    kv_idx = torch.arange(kv_len, device=device)
+    q_block_id = q_idx // block_size
+    anchor_pos = anchor_positions.gather(
+        1, q_block_id.unsqueeze(0).expand(bsz, -1)
+    )  # [B, Q]
+    is_context = kv_idx < seq_len
+    mask_context = is_context.view(1, 1, kv_len) & (
+        kv_idx.view(1, 1, kv_len) < anchor_pos.unsqueeze(-1)
     )
+    is_draft = kv_idx >= seq_len
+    kv_block_id = (kv_idx - seq_len) // block_size
+    mask_draft = is_draft.view(1, 1, kv_len) & (
+        q_block_id.view(1, q_len, 1) == kv_block_id.view(1, 1, kv_len)
+    )
+    is_valid_block = block_keep_mask.gather(
+        1, q_block_id.unsqueeze(0).expand(bsz, -1)
+    )  # [B, Q]
+    allowed = (mask_context | mask_draft) & is_valid_block.unsqueeze(-1)  # [B, Q, KV]
+    # Dummy/invalid query rows attend to nothing, which would make the softmax
+    # produce NaNs (flex returns 0 for such rows). Let them attend to key 0
+    # instead; their outputs are discarded downstream via eval_mask.
+    no_valid_key = ~allowed.any(dim=-1, keepdim=True)
+    first_key = torch.zeros_like(allowed)
+    first_key[:, :, 0] = True
+    allowed = allowed | (no_valid_key & first_key)
+    additive = torch.zeros(bsz, 1, q_len, kv_len, device=device, dtype=dtype)
+    return additive.masked_fill(~allowed.unsqueeze(1), torch.finfo(dtype).min)
 
 
 def build_anchor_candidate_mask(

@@ -87,7 +87,11 @@ def build_draft_config(target_config, model_args):
     draft_config.block_size = int(model_args.block_size)
     draft_config.tie_word_embeddings = False
     draft_config.layer_types = layer_types
-    draft_config._attn_implementation = TRAIN_ATTN_IMPLEMENTATION
+    draft_config._attn_implementation = (
+        str(model_args["attn_implementation"])
+        if "attn_implementation" in model_args
+        else TRAIN_ATTN_IMPLEMENTATION
+    )
     draft_config.mask_token_id = int(model_args.mask_token_id)
     draft_config.target_layer_ids = target_layer_ids
     draft_config.num_anchors = int(model_args.num_anchors)
