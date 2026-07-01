@@ -1,9 +1,10 @@
 import copy
 
 from deepspec.modeling.dspark.common import validate_target_layer_ids
+from deepspec.utils import is_npu_available
 
 
-TRAIN_ATTN_IMPLEMENTATION = "flex_attention"
+TRAIN_ATTN_IMPLEMENTATION = "sdpa" if is_npu_available() else "flex_attention"
 
 
 def build_draft_config(
