@@ -294,17 +294,21 @@ class BaseTrainer:
             start_global_offset_samples=start_offset_samples,
             num_samples=num_samples,
         )
-        return DataLoader(
-            self.train_dataset,
+        num_workers = int(self.args.data.num_workers)
+        dataloader_kwargs = dict(
             batch_size=int(self.args.train.local_batch_size),
             sampler=sampler,
             collate_fn=self.data_collator_cls(),
-            num_workers=int(self.args.data.num_workers),
+            num_workers=num_workers,
             pin_memory=True,
             drop_last=True,
-            persistent_workers=True,
-            prefetch_factor=4,
         )
+        # prefetch_factor / persistent_workers are only valid with worker
+        # processes; passing them when num_workers=0 raises a ValueError.
+        if num_workers > 0:
+            dataloader_kwargs["persistent_workers"] = True
+            dataloader_kwargs["prefetch_factor"] = 4
+        return DataLoader(self.train_dataset, **dataloader_kwargs)
 
     def run_batch(self, batch):
         raise NotImplementedError
