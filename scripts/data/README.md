@@ -22,7 +22,7 @@ train_datasets/qwen3_4b/perfectblend_train_regen.jsonl
 ~/.cache/deepspec/qwen3_4b_target_cache
 ```
 
-The example scripts assume a single machine with eight visible GPUs by default. For fewer GPUs, edit `num_workers` and `CUDA_VISIBLE_DEVICES` in the shell scripts.
+The example scripts assume a single machine with eight visible GPUs by default. For fewer GPUs, set `CUDA_VISIBLE_DEVICES` before running the shell scripts; `num_workers` is derived from the visible GPU list unless you override it explicitly.
 
 ## Step 1: Download And Split Data
 
@@ -59,6 +59,14 @@ By default this starts eight `Qwen/Qwen3-4B` workers on ports `30000` to `30007`
 ```text
 logs/sglang_qwen3_4b/
 ```
+
+For fewer GPUs, pass the device list to the launcher:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/data/launch_sglang_server.sh
+```
+
+This starts four workers on ports `30000` to `30003`. Use the same `CUDA_VISIBLE_DEVICES`, `num_workers`, and `start_port` values when running `prepare_data.sh` so the data generation step connects to the right servers.
 
 In another terminal, regenerate the assistant answers:
 
