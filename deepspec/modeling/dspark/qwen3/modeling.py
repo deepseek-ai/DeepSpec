@@ -447,21 +447,23 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
         aligned_target_logits = None
         if target_last_hidden_states is not None:
             target_pred_indices = (safe_label_indices - 1).clamp(min=0)
-            aligned_target_hidden = torch.gather(
-                target_last_hidden_states.unsqueeze(1).expand(
-                    -1,
-                    anchor_positions.size(1),
-                    -1,
-                    -1,
-                ),
-                2,
-                target_pred_indices.unsqueeze(-1).expand(
-                    -1,
-                    -1,
-                    -1,
-                    target_last_hidden_states.size(-1),
-                ),
-            )
+            hidden_chunks = []
+            anchor_chunk_size = 64
+            num_anchors = anchor_positions.size(1)
+            for c_start in range(0, num_anchors, anchor_chunk_size):
+                c_end = min(c_start + anchor_chunk_size, num_anchors)
+                chunk_indices = target_pred_indices[:, c_start:c_end]
+                chunk_gather = torch.gather(
+                    target_last_hidden_states.unsqueeze(1).expand(
+                        -1, c_end - c_start, -1, -1,
+                    ),
+                    2,
+                    chunk_indices.unsqueeze(-1).expand(
+                        -1, -1, -1, target_last_hidden_states.size(-1),
+                    ),
+                )
+                hidden_chunks.append(chunk_gather)
+            aligned_target_hidden = torch.cat(hidden_chunks, dim=1)
             aligned_target_logits = self.compute_logits(aligned_target_hidden)
         eval_mask = build_eval_mask(
             seq_len=seq_len,
