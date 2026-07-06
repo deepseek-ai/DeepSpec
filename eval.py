@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 import torch
 from transformers import AutoConfig
 from deepspec.eval.dspark import Gemma4DSparkEvaluator, Qwen3DSparkEvaluator
@@ -41,6 +42,12 @@ def parse_args():
     )
     parser.add_argument("--tensorboard-dir", type=str, default=None)
     parser.add_argument("--step", type=int, default=None,help=("step for tensorboard logging"),)
+    parser.add_argument(
+        "--dataset-root",
+        type=str,
+        default="./eval_datasets",
+        help="Directory containing evaluation JSONL files.",
+    )
     parser.add_argument("--seed", type=int, default=980406)
     args = parser.parse_args()
     args.tasks = list(TASKS)

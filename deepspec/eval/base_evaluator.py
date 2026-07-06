@@ -26,13 +26,20 @@ from deepspec.utils import (
 
 
 DEFAULT_DATASET_ROOT = "./eval_datasets"
+_DATASET_ROOT_ENV = "DEEPSPEC_EVAL_DATASET_ROOT"
+
+
+def _resolve_dataset_root(dataset_root: str | None = None) -> str:
+    if dataset_root is not None:
+        return dataset_root
+    return os.environ.get(_DATASET_ROOT_ENV, DEFAULT_DATASET_ROOT)
 
 
 def load_and_process_dataset(
     data_name: str,
-    dataset_root: str = DEFAULT_DATASET_ROOT,
+    dataset_root: str | None = None,
 ):
-    dataset_path = Path(dataset_root) / f"{data_name}.jsonl"
+    dataset_path = Path(_resolve_dataset_root(dataset_root)) / f"{data_name}.jsonl"
     assert dataset_path.exists()
 
     rows = []
@@ -517,7 +524,10 @@ class BaseEvaluator:
         max_samples: int | None,
     ) -> list[SimpleNamespace]:
         seed_all(int(self.args.seed))
-        dataset = load_and_process_dataset(dataset_name)
+        dataset = load_and_process_dataset(
+            dataset_name,
+            dataset_root=getattr(self.args, "dataset_root", None),
+        )
 
         if max_samples is not None and len(dataset) > max_samples:
             rng = random.Random(int(self.args.seed))
