@@ -26,6 +26,15 @@ def parse_args():
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--privacy-test-flag", action="store_true")
+    parser.add_argument(
+        "--include-error-conversations",
+        action="store_true",
+        help=(
+            "Write full failed samples to the error JSONL. By default, message "
+            "content is redacted from errors to avoid retaining private chats."
+        ),
+    )
     parser.add_argument("--is-reasoning-model", action="store_true")
     parser.add_argument("--is-gpt-oss", action="store_true")
 
@@ -97,18 +106,81 @@ def build_query_kwargs(args, messages, max_tokens=None):
     return query_kwargs
 
 
-def error_sample(sample, message):
-    sample["status"] = "error"
-    sample["error"] = message
-    return sample
+SENSITIVE_SAMPLE_FIELDS = {"conversations", "messages", "turns"}
+
+
+def _collect_sensitive_strings(value):
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, dict):
+        sensitive = []
+        for item in value.values():
+            sensitive.extend(_collect_sensitive_strings(item))
+        return sensitive
+    if isinstance(value, list):
+        sensitive = []
+        for item in value:
+            sensitive.extend(_collect_sensitive_strings(item))
+        return sensitive
+    return []
+
+
+def _redact_error_message(message, sample):
+    redacted = str(message)
+    for field in SENSITIVE_SAMPLE_FIELDS:
+        for sensitive_text in _collect_sensitive_strings(sample.get(field)):
+            if sensitive_text in redacted:
+                redacted = redacted.replace(sensitive_text, "[redacted]")
+    return redacted
+
+
+def _redact_error_sample(sample):
+    redacted = {}
+    for key, value in sample.items():
+        if key in SENSITIVE_SAMPLE_FIELDS:
+            continue
+        if isinstance(value, (int, float, bool)) or value is None:
+            redacted[key] = value
+        elif isinstance(value, str):
+            redacted[f"{key}_redacted"] = True
+        elif isinstance(value, list):
+            redacted[f"{key}_count"] = len(value)
+            redacted[f"{key}_redacted"] = True
+        elif isinstance(value, dict):
+            redacted[f"{key}_keys"] = sorted(str(item_key) for item_key in value.keys())
+            redacted[f"{key}_redacted"] = True
+        else:
+            redacted[f"{key}_redacted"] = True
+    for field in SENSITIVE_SAMPLE_FIELDS:
+        if field not in sample:
+            continue
+        value = sample[field]
+        redacted[f"{field}_redacted"] = True
+        redacted[f"{field}_count"] = len(value) if isinstance(value, list) else None
+    return redacted
+
+
+def error_sample(sample, message, *, include_conversations=False):
+    output_sample = sample if include_conversations else _redact_error_sample(sample)
+    output_sample["status"] = "error"
+    output_sample["error"] = _redact_error_message(message, sample)
+    return output_sample
 
 
 def call_sglang(args, server_address, sample, max_tokens=None):
     conversations = sample.get("conversations")
     if not conversations:
-        return error_sample(sample, "Missing conversations")
+        return error_sample(
+            sample,
+            "Missing conversations",
+            include_conversations=args.include_error_conversations,
+        )
     if conversations[0].get("role") == "assistant":
-        return error_sample(sample, "Data starts with an assistant message")
+        return error_sample(
+            sample,
+            "Data starts with an assistant message",
+            include_conversations=args.include_error_conversations,
+        )
 
     client = OpenAI(base_url=f"http://{server_address}/v1", api_key="None")
     regenerated = []
@@ -121,7 +193,11 @@ def call_sglang(args, server_address, sample, max_tokens=None):
         if role == "assistant":
             continue
         if role != "user":
-            return error_sample(sample, f"Invalid message role: {role}")
+            return error_sample(
+                sample,
+                f"Invalid message role: {role}",
+                include_conversations=args.include_error_conversations,
+            )
 
         regenerated.append(message)
         try:
@@ -129,7 +205,11 @@ def call_sglang(args, server_address, sample, max_tokens=None):
                 **build_query_kwargs(args, regenerated, max_tokens=max_tokens)
             )
         except Exception as exc:
-            return error_sample(sample, str(exc))
+            return error_sample(
+                sample,
+                str(exc),
+                include_conversations=args.include_error_conversations,
+            )
 
         response_message = {
             "role": "assistant",
@@ -190,7 +270,7 @@ def validate_servers(args):
             try:
                 _, result, elapsed = future.result()
             except Exception as exc:
-                result = {"status": "error", "error": str(exc)}
+                result = {"status": "error", "error": "server validation failed"}
                 elapsed = 0.0
 
             if result.get("status") == "success":
@@ -239,6 +319,7 @@ def write_finished_result(
     sample = future.result()
     if sample["status"] == "error":
         error_handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        error_handle.flush()
         stats["errors"] += 1
         return
 
@@ -267,6 +348,9 @@ def print_config(args):
     print(f"  top_k: {args.top_k}")
     print(f"  min_p: {args.min_p}")
     print(f"  resume: {args.resume}")
+    print(f"  include_error_conversations: {args.include_error_conversations}")
+    print(f"  include_error_conversations: {args.include_error_conversations}")
+    print(f"  include_error_conversations: {args.include_error_conversations}")
 
 
 def main():

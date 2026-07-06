@@ -4,19 +4,35 @@ import mmap
 import os
 import pickle
 from bisect import bisect_right
+from pathlib import Path
 
 import torch
 from tqdm import tqdm
 
 CACHE_DIR = os.path.expanduser("~/.cache/deepspec")
+_CACHE_DIR_ENV = "DEEPSPEC_CACHE_DIR"
+_DISABLE_INDEX_CACHE_ENV = "DEEPSPEC_DISABLE_JSONL_INDEX_CACHE"
+
+
+def _is_disabled_env(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class JsonLineDataset(torch.utils.data.Dataset):
-    def __init__(self, data_paths):
+    def __init__(self, data_paths, *, cache_dir=None, cache_index=True):
         super().__init__()
         self.data_paths = sorted(data_paths)
-        self.cache_dir = os.path.abspath(CACHE_DIR)
-        os.makedirs(self.cache_dir, exist_ok=True)
+        self.cache_index = bool(cache_index) and not _is_disabled_env(
+            os.environ.get(_DISABLE_INDEX_CACHE_ENV, "")
+        )
+        resolved_cache_dir = (
+            cache_dir
+            if cache_dir is not None
+            else os.environ.get(_CACHE_DIR_ENV, CACHE_DIR)
+        )
+        self.cache_dir = os.path.abspath(os.path.expanduser(resolved_cache_dir))
+        if self.cache_index:
+            os.makedirs(self.cache_dir, exist_ok=True)
         self.num_data_per_file = []
         self.cum_counts = [0]
         self.files = [None] * len(self.data_paths)
@@ -73,18 +89,27 @@ class JsonLineDataset(torch.utils.data.Dataset):
         abspath = os.path.abspath(path)
         st = os.stat(abspath)
         mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
-        return f"{os.path.normcase(abspath)}|{mtime_ns}"
+        path_hash = hashlib.blake2b(
+            os.path.normcase(abspath).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+        return f"pathhash={path_hash}|size={st.st_size}|mtime_ns={mtime_ns}"
 
     def _cache_path_from_key(self, file_key):
+        if not self.cache_index:
+            return None
         key_hash = hashlib.blake2b(file_key.encode("utf-8"), digest_size=16).hexdigest()
         return os.path.join(self.cache_dir, f"jsonlindex-{key_hash}.pkl")
 
     def _atomic_pickle_dump(self, obj, dst_path):
+        if dst_path is None:
+            return
         tmp_path = f"{dst_path}.tmp-{os.getpid()}"
         with open(tmp_path, "wb") as handle:
             pickle.dump(obj, handle, protocol=pickle.HIGHEST_PROTOCOL)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, dst_path)
 
     def _build_all_line_starts(self):
@@ -125,7 +150,7 @@ class JsonLineDataset(torch.utils.data.Dataset):
                 self._atomic_pickle_dump(
                     {
                         "file_key": file_key,
-                        "file_path": os.path.abspath(path),
+                        "source_name": Path(path).name,
                         "line_starts": starts,
                     },
                     cache_path,
