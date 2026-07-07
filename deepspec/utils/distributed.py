@@ -8,25 +8,36 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
 
+from .device import (
+    accelerator_backend,
+    current_device_index,
+    device_count,
+    make_device,
+    set_device,
+)
+
 
 def init_dist(local_rank: int, timeout_minutes: int = 60):
-    local_world_size = torch.cuda.device_count()
+    local_world_size = device_count()
+    assert local_world_size > 0, "no accelerator devices are visible"
     node_rank = int(os.environ["RANK"])
     node_world_size = int(os.environ["WORLD_SIZE"])
     rank = node_rank * local_world_size + local_rank
     world_size = node_world_size * local_world_size
     init_method = f"tcp://{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
-    torch.cuda.set_device(local_rank)
-    device = torch.device("cuda", local_rank)
+    set_device(local_rank)
+    device = make_device(local_rank)
 
-    dist.init_process_group(
-        backend="nccl",
+    init_kwargs = dict(
+        backend=accelerator_backend(),
         init_method=init_method,
         rank=rank,
         world_size=world_size,
         timeout=timedelta(minutes=timeout_minutes),
-        device_id=device,
     )
+    if device.type == "cuda":
+        init_kwargs["device_id"] = device
+    dist.init_process_group(**init_kwargs)
     return device, rank, world_size
 
 
@@ -35,7 +46,7 @@ def is_global_main_process():
 
 
 def is_local_main_process():
-    return torch.cuda.current_device() == 0
+    return current_device_index() == 0
 
 
 def print_on_global_main(*args, **kwargs):

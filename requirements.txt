@@ -9,6 +9,7 @@ tensorboard==2.20.0
 matplotlib==3.10.9
 triton==3.5.1
 typing_extensions==4.15.0
+prettytable==3.18.0
 sentencepiece==0.2.1
 safetensors==0.7.0
 prettytable==3.17.0

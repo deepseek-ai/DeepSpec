@@ -26,6 +26,8 @@ from deepspec.data.target_cache_dataset import (
 from deepspec.data.jsonl_dataset import JsonLineDataset
 from deepspec.utils import (
     CustomJSONEncoder,
+    device_count,
+    empty_cache,
     get_git_diff,
     get_git_sha,
     init_dist,
@@ -335,7 +337,7 @@ def main(local_rank: int):
     finally:
         writer.close()
     del target_model
-    torch.cuda.empty_cache()
+    empty_cache()
     dataset.close()
     summary = LocalCacheWriteSummary(
         global_rank=global_rank,
@@ -399,4 +401,4 @@ if __name__ == "__main__":
     if os.path.exists(".git"):
         print(f"git status:", "\n\n".join(get_git_sha(detail_info=True)))
         print("git diff:", get_git_diff())
-    torch.multiprocessing.spawn(main, nprocs=torch.cuda.device_count())
+    torch.multiprocessing.spawn(main, nprocs=device_count())

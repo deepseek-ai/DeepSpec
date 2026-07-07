@@ -1,9 +1,10 @@
 import copy
 
 from deepspec.modeling.dspark.common import validate_target_layer_ids
+from deepspec.utils import is_npu_available
 
 
-TRAIN_ATTN_IMPLEMENTATION = "flex_attention"
+TRAIN_ATTN_IMPLEMENTATION = "sdpa" if is_npu_available() else "flex_attention"
 
 
 def get_gemma4_text_config(target_config):
@@ -84,6 +85,11 @@ def build_draft_config(target_config, model_args):
     draft_config.target_text_model_type = str(draft_config.model_type)
     draft_config.num_target_layers = num_target_layers
     draft_config.num_hidden_layers = num_draft_layers
+    # The public Gemma4 DSpark draft block is dense-only. Gemma4 A4B targets are
+    # MoE, but the draft model can still train as a dense proposal network
+    # against target hidden states from the MoE model.
+    draft_config.enable_moe_block = False
+    draft_config.hidden_size_per_layer_input = 0
     draft_config.block_size = int(model_args.block_size)
     draft_config.tie_word_embeddings = False
     draft_config.layer_types = layer_types

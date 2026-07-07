@@ -2,6 +2,8 @@ from threading import Thread
 
 import torch
 
+from deepspec.utils import accelerator_module
+
 
 def move_batch_to_device(batch, device):
     moved = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
@@ -22,7 +24,8 @@ class CUDAPrefetcher:
     def __init__(self, dataloader, device):
         self.dataloader = dataloader
         self.device = device
-        self.stream = torch.cuda.Stream(device=device)
+        self.accelerator = accelerator_module()
+        self.stream = self.accelerator.Stream(device=device)
 
     def __iter__(self):
         self._iter = iter(self.dataloader)
@@ -40,7 +43,7 @@ class CUDAPrefetcher:
         except StopIteration:
             self._done = True
             return
-        with torch.cuda.stream(self.stream):
+        with self.accelerator.stream(self.stream):
             self._gpu_batch = move_batch_to_device(cpu_batch, self.device)
 
     def __next__(self):
@@ -53,7 +56,7 @@ class CUDAPrefetcher:
             raise StopIteration
 
         # Make the compute stream wait until the side-stream H2D is complete.
-        current = torch.cuda.current_stream(self.device)
+        current = self.accelerator.current_stream(self.device)
         current.wait_stream(self.stream)
         batch = self._gpu_batch
 
