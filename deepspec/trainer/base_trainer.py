@@ -10,8 +10,14 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from deepspec.data import CacheDataset, validate_train_cache
+from deepspec.data import (
+    CacheDataset,
+    ConversationCollator,
+    JsonLineDataset,
+    validate_train_cache,
+)
 from deepspec.data.cuda_prefetcher import CUDAPrefetcher
+from deepspec.modeling.target_extract import get_target_backbone
 from deepspec.utils import (
     BF16Optimizer,
     StatelessResumableDistributedSampler,
@@ -158,6 +164,9 @@ class BaseTrainer:
         )
         self.suspend_controller = SuspendController(device=self.device)
         self.next_micro_step = 0
+        self._online_target = bool(getattr(self.args.data, "online_target", False))
+        self.target_backbone = None
+        self._online_collator = None
 
         if is_global_main_process(): ensure_dir(self.checkpoint_dir_root)
         training_logger.init(
@@ -180,12 +189,23 @@ class BaseTrainer:
             self.model = torch.compile(self.model, dynamic=True)
         self.model = self._wrap_with_fsdp(self.model)
 
-        self.train_dataset = CacheDataset(cache_dir=self.args.data.target_cache_path)
-        validate_train_cache(
-            train_dataset=self.train_dataset,
-            draft_model=self.draft_model,
-            target_model_name_or_path=self.args.model.target_model_name_or_path,
-        )
+        if self._online_target:
+            self.train_dataset = JsonLineDataset(
+                data_paths=list(self.args.data.train_data_paths)
+            )
+            self._online_collator = ConversationCollator(
+                tokenizer=self.tokenizer,
+                chat_template=self.args.data.chat_template,
+                max_length=int(self.args.data.max_length),
+                min_loss_tokens=int(self.args.data.min_loss_tokens),
+            )
+        else:
+            self.train_dataset = CacheDataset(cache_dir=self.args.data.target_cache_path)
+            validate_train_cache(
+                train_dataset=self.train_dataset,
+                draft_model=self.draft_model,
+                target_model_name_or_path=self.args.model.target_model_name_or_path,
+            )
 
         (
             self.gradient_accumulation_steps,
@@ -257,8 +277,13 @@ class BaseTrainer:
         )
         draft_model = draft_model.to(device=self.device, dtype=self.precision_dtype)
 
-        # Training only uses the target checkpoint to initialize frozen draft
-        # embeddings and lm_head weights.
+        # Offline (cached) training only uses the target checkpoint to initialize
+        # frozen draft embeddings and lm_head weights, then discards it. Online
+        # training instead keeps the frozen target backbone resident so hidden
+        # states can be recomputed at every step.
+        # Load on CPU first. Offline (cached) training discards this model after
+        # copying embeddings, so it must never occupy GPU memory. Online training
+        # moves only the backbone to the GPU below.
         target_model = AutoModelForCausalLM.from_pretrained(
             model_args.target_model_name_or_path,
             dtype=self.precision_dtype,
@@ -271,7 +296,18 @@ class BaseTrainer:
             lm_head=target_lm_head,
             freeze=True,
         )
-        del target_model
+
+        if self._online_target:
+            # Keep the *backbone* (its forward returns last_hidden_state, which
+            # run_target_forward_with_hooks relies on). Frozen, eval, on-device.
+            self.target_backbone = get_target_backbone(target_model).to(
+                device=self.device
+            ).eval()
+            for param in self.target_backbone.parameters():
+                param.requires_grad_(False)
+        else:
+            self.target_backbone = None
+            del target_model
         return draft_model, tokenizer
 
     def _build_draft_model(self, *, target_config, model_args):
@@ -298,7 +334,7 @@ class BaseTrainer:
             self.train_dataset,
             batch_size=int(self.args.train.local_batch_size),
             sampler=sampler,
-            collate_fn=self.data_collator_cls(),
+            collate_fn=self._online_collator or self.data_collator_cls(),
             num_workers=int(self.args.data.num_workers),
             pin_memory=True,
             drop_last=True,

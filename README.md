@@ -20,6 +20,10 @@ Run the stages in order — each stage's output feeds the next:
 2. **Training** — train a draft model against the cached target outputs.
 3. **Evaluation** — measure speculative-decoding acceptance on benchmark tasks.
 
+> **Tip:** [Online training](#online-training-no-target-cache) can skip the target-cache
+> step entirely (Data Preparation steps 1–2 only) by recomputing target hidden states
+> during training. This trades extra GPU compute per step for not storing the cache.
+
 ## Data Preparation
 
 See [scripts/data/README.md](./scripts/data/README.md) for the step-by-step data pipeline:
@@ -37,6 +41,52 @@ bash scripts/train/train.sh
 `train.sh` launches `train.py`, which spawns one worker per visible GPU. Select the algorithm and target model by pointing `config_path` at one of the configs under [config/](./config/) (e.g. `config/dspark/dspark_qwen3_4b.py`); see the script header for the full list of configs, how to override `config_path` / `target_cache_dir`, and how to use `--opts` to override individual config fields. Checkpoints are written to `~/checkpoints/<project_name>/<exp_name>/step_*`.
 
 Hardware: the default configs and scripts assume a single node with 8 GPUs. For fewer GPUs, reduce `CUDA_VISIBLE_DEVICES`.
+
+### Online Training (no target cache)
+
+The default training path reads target hidden states from a precomputed target cache,
+which can be very large (roughly 38 TB for `Qwen/Qwen3-4B`; see the
+[storage warning](./scripts/data/README.md#step-3-prepare-target-cache)). **Online
+training** avoids that cache: it keeps the frozen target model resident on the GPU and
+recomputes the target hidden states for each batch during training. This trades extra
+GPU compute and memory per step for not having to generate or store the cache, which is
+convenient for smaller datasets or storage-constrained machines.
+
+To use it, point `train.sh` at an online config — currently
+[config/dspark/dspark_qwen3_4b_online.py](./config/dspark/dspark_qwen3_4b_online.py):
+
+```bash
+bash scripts/train/train.sh \
+    config/dspark/dspark_qwen3_4b_online.py
+```
+
+(or run `train.py --config config/dspark/dspark_qwen3_4b_online.py` directly).
+
+An online config differs from its cached counterpart only in the `data` block:
+
+```python
+data = dict(
+    # Recompute target hidden states each step instead of reading a cache.
+    online_target=True,
+    target_cache_path=None,            # ignored in online mode
+    # JSONL conversation files (same format as the cache pipeline's input;
+    # see scripts/data/README.md). Each line: {"conversations": [{"role", "content"}, ...]}.
+    train_data_paths=["~/.cache/deepspec/train_data/train.jsonl"],
+    min_loss_tokens=14,                # drop micro-batches with too few loss tokens
+    chat_template="qwen",
+    max_length=4096,
+    num_workers=4,
+)
+```
+
+The input JSONL is the same format produced by Data Preparation **steps 1–2** (the
+regenerated answers from `generate_train_data.py`); you skip **step 3** (cache
+generation). Online mode is only implemented for the DSpark trainer — Eagle3 online
+training is not yet supported.
+
+> **Note:** because the full target model stays on the GPU and runs a forward pass every
+> step, online training uses more GPU memory and is slower per step than reading from the
+> cache. If you hit OOM, lower `train.local_batch_size` or `data.max_length`.
 
 
 ## Evaluation
