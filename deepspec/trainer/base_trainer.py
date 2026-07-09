@@ -258,6 +258,22 @@ class BaseTrainer:
             model_args.target_model_name_or_path,
         )
 
+        # Optional long-context training: extend the target/draft RoPE so the
+        # drafter's attention (built from target_config below) covers long
+        # sequences. Zero-regression when unset.
+        rope_scaling = getattr(model_args, "rope_scaling", None)
+        if rope_scaling is not None:
+            # transformers>=5 unifies RoPE config under rope_parameters; merge
+            # the extension in while keeping the base rope_theta.
+            rope_parameters = dict(getattr(target_config, "rope_parameters", None) or {})
+            rope_parameters.update(rope_scaling)
+            target_config.rope_parameters = rope_parameters
+        max_position_embeddings = getattr(
+            model_args, "max_position_embeddings", None
+        )
+        if max_position_embeddings is not None:
+            target_config.max_position_embeddings = int(max_position_embeddings)
+
         draft_model = self._build_draft_model(
             target_config=target_config,
             model_args=model_args,

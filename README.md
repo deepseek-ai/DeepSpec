@@ -38,6 +38,8 @@ bash scripts/train/train.sh
 
 Hardware: the default configs and scripts assume a single node with 8 GPUs. For fewer GPUs, reduce `CUDA_VISIBLE_DEVICES`.
 
+**Long-context training (optional).** Set `rope_scaling` (and optionally `max_position_embeddings`) in a config's `model` block to extend the target/drafter RoPE, and raise `data.max_length`, to train a drafter for long context (the regime where draft acceptance degrades most). See [`config/dflash/dflash_qwen3_8b_longctx.py`](./config/dflash/dflash_qwen3_8b_longctx.py) for a YaRN-4x (32k->128k) example; generate the target cache at the same long context.
+
 
 ## Evaluation
 
