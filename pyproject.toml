@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepspec"
+version = "0.1.0"
+description = "Training and evaluation codebase for speculative-decoding draft models (DSpark, DFlash, Eagle3)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+
+# Core training/eval runtime. Pins mirror requirements.txt so `pip install .`
+# and `pip install -r requirements.txt` stay in lockstep. Install a torch build
+# matching your CUDA/accelerator if the default wheel is not appropriate.
+dependencies = [
+    "torch==2.9.1",
+    "transformers==5.10.2",
+    "numpy==2.4.4",
+    "PyYAML==6.0.3",
+    "tqdm==4.67.3",
+    "tensorboard==2.20.0",
+    "matplotlib==3.10.9",
+    "triton==3.5.1",
+    "typing_extensions==4.15.0",
+    "sentencepiece==0.2.1",
+    "safetensors==0.7.0",
+]
+
+[project.optional-dependencies]
+# Data preparation: regenerating target answers and building the target cache.
+# Also requires an inference engine to serve the target model (see
+# scripts/data/README.md).
+data = [
+    "datasets==4.8.5",
+    "openai==2.6.1",
+]
+
+[project.urls]
+Repository = "https://github.com/deepseek-ai/DeepSpec"
+
+# Package the `deepspec` library only; scripts/, config/, tests/, and
+# eval_datasets/ are repo tooling and data, not importable package code.
+[tool.setuptools.packages.find]
+include = ["deepspec*"]
