@@ -261,6 +261,36 @@ def create_position_ids(
     )
 
 
+@torch.compiler.disable(recursive=False)
+def chunked_gather_target_hidden(
+    target_last_hidden_states: torch.Tensor,
+    target_pred_indices: torch.Tensor,
+    *,
+    anchor_chunk_size: int = 64,
+) -> torch.Tensor:
+    """Gather target hidden states along the anchor axis in chunks.
+
+    Splits the expand+gather across num_anchors to bound the peak activation
+    memory of the backward pass. Kept out of torch.compile because dynamic
+    range() loops trigger graph breaks or recompiles under dynamic=True.
+    """
+    hidden_chunks = []
+    num_anchors = target_pred_indices.size(1)
+    hidden_dim = target_last_hidden_states.size(-1)
+    for c_start in range(0, num_anchors, anchor_chunk_size):
+        c_end = min(c_start + anchor_chunk_size, num_anchors)
+        chunk_indices = target_pred_indices[:, c_start:c_end]
+        chunk_gather = torch.gather(
+            target_last_hidden_states.unsqueeze(1).expand(
+                -1, c_end - c_start, -1, -1,
+            ),
+            2,
+            chunk_indices.unsqueeze(-1).expand(-1, -1, -1, hidden_dim),
+        )
+        hidden_chunks.append(chunk_gather)
+    return torch.cat(hidden_chunks, dim=1)
+
+
 def create_noise_embed(
     embed_tokens: nn.Module,
     input_ids: torch.Tensor,
@@ -306,4 +336,5 @@ __all__ = [
     "log_sampler_stats",
     "create_position_ids",
     "create_noise_embed",
+    "chunked_gather_target_hidden",
 ]

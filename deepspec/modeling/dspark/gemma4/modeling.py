@@ -21,6 +21,7 @@ from deepspec.modeling.dspark.common import (
     AcceptRatePredictor,
     DSparkForwardOutput,
     build_eval_mask,
+    chunked_gather_target_hidden,
     create_dspark_attention_mask,
     create_noise_embed,
     create_position_ids,
@@ -519,20 +520,9 @@ class Gemma4DSparkModel(Gemma4PreTrainedModel):
         aligned_target_logits = None
         if target_last_hidden_states is not None:
             target_pred_indices = (safe_label_indices - 1).clamp(min=0)
-            aligned_target_hidden = torch.gather(
-                target_last_hidden_states.unsqueeze(1).expand(
-                    -1,
-                    anchor_positions.size(1),
-                    -1,
-                    -1,
-                ),
-                2,
-                target_pred_indices.unsqueeze(-1).expand(
-                    -1,
-                    -1,
-                    -1,
-                    target_last_hidden_states.size(-1),
-                ),
+            aligned_target_hidden = chunked_gather_target_hidden(
+                target_last_hidden_states,
+                target_pred_indices,
             )
             aligned_target_logits = self.compute_logits(aligned_target_hidden)
         eval_mask = build_eval_mask(
