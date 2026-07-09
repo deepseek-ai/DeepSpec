@@ -59,18 +59,20 @@ def expected_target_cache_tensor_nbytes(
     seq_len: int,
     hidden_size: int,
     num_target_layers: int,
+    hidden_dtype: str = "bfloat16",
 ):
     numel = expected_target_cache_tensor_numel(
         seq_len=seq_len,
         hidden_size=hidden_size,
         num_target_layers=num_target_layers,
     )
+    hidden_element_size = 2 if hidden_dtype == "bfloat16" else 1
     return {
         "input_ids": numel["input_ids"] * 4,
         "attention_mask": numel["attention_mask"],
         "loss_mask": numel["loss_mask"],
-        "target_hidden_states": numel["target_hidden_states"] * 2,
-        "target_last_hidden_states": numel["target_last_hidden_states"] * 2,
+        "target_hidden_states": numel["target_hidden_states"] * hidden_element_size,
+        "target_last_hidden_states": numel["target_last_hidden_states"] * hidden_element_size,
     }
 
 
@@ -151,9 +153,10 @@ def validate_target_cache_manifest(*, cache_dir: str, manifest):
         "Unsupported target cache manifest version: "
         f"{manifest['version']} != {TARGET_CACHE_VERSION}"
     )
-    assert manifest["hidden_dtype"] == TARGET_CACHE_HIDDEN_DTYPE, (
-        "Unsupported hidden_dtype in target cache manifest: "
-        f"{manifest['hidden_dtype']}"
+    supported_hidden_dtypes = ("bfloat16", "float8_e4m3fn", "float8_e5m2")
+    assert manifest["hidden_dtype"] in supported_hidden_dtypes, (
+        f"Unsupported hidden_dtype in target cache manifest: {manifest['hidden_dtype']}. "
+        f"Supported dtypes are {supported_hidden_dtypes}."
     )
     assert manifest["token_dtype"] == TARGET_CACHE_TOKEN_DTYPE, (
         "Unsupported token_dtype in target cache manifest: "
@@ -228,6 +231,11 @@ def _tensor_to_bfloat16_bytes(tensor: torch.Tensor):
     return cpu_tensor.view(torch.uint16).numpy().tobytes()
 
 
+def _tensor_to_float8_bytes(tensor: torch.Tensor, dtype: torch.dtype):
+    cpu_tensor = tensor.detach().to(device="cpu", dtype=dtype).contiguous()
+    return cpu_tensor.view(torch.uint8).numpy().tobytes()
+
+
 def compute_local_sample_range(*, num_samples: int, rank: int, world_size: int):
     base = int(num_samples) // int(world_size)
     remainder = int(num_samples) % int(world_size)
@@ -288,24 +296,36 @@ def build_target_cache_sample_bytes(
     loss_mask: torch.Tensor,
     target_hidden_states: torch.Tensor,
     target_last_hidden_states: torch.Tensor,
+    hidden_dtype: str = "bfloat16",
 ):
+    if hidden_dtype == "bfloat16":
+        th_bytes = _tensor_to_bfloat16_bytes(target_hidden_states)
+        tlh_bytes = _tensor_to_bfloat16_bytes(target_last_hidden_states)
+    elif hidden_dtype == "float8_e4m3fn":
+        th_bytes = _tensor_to_float8_bytes(target_hidden_states, torch.float8_e4m3fn)
+        tlh_bytes = _tensor_to_float8_bytes(target_last_hidden_states, torch.float8_e4m3fn)
+    elif hidden_dtype == "float8_e5m2":
+        th_bytes = _tensor_to_float8_bytes(target_hidden_states, torch.float8_e5m2)
+        tlh_bytes = _tensor_to_float8_bytes(target_last_hidden_states, torch.float8_e5m2)
+    else:
+        raise ValueError(f"Unsupported hidden_dtype for writing bytes: {hidden_dtype}")
+
     return TargetCacheSampleBytes(
         sample_id=int(sample_id),
         seq_len=int(input_ids.shape[0]),
         input_ids=_tensor_to_bytes(input_ids, torch.int32),
         attention_mask=_tensor_to_bytes(attention_mask, torch.uint8),
         loss_mask=_tensor_to_bytes(loss_mask, torch.uint8),
-        target_hidden_states=_tensor_to_bfloat16_bytes(target_hidden_states),
-        target_last_hidden_states=_tensor_to_bfloat16_bytes(
-            target_last_hidden_states
-        ),
+        target_hidden_states=th_bytes,
+        target_last_hidden_states=tlh_bytes,
     )
 
 
 class LocalTargetCacheWriter:
-    def __init__(self, *, rank_dir: str, max_shard_bytes: int):
+    def __init__(self, *, rank_dir: str, max_shard_bytes: int, hidden_dtype: str = "bfloat16"):
         self.rank_dir = rank_dir
         self.max_shard_bytes = int(max_shard_bytes)
+        self.hidden_dtype = hidden_dtype
         self.local_index_path = os.path.join(rank_dir, "samples.local.idx")
         self.index_handle = open(self.local_index_path, "wb")
         self.current_shard_id = -1
@@ -403,6 +423,7 @@ class LocalTargetCacheWriter:
             loss_mask=loss_mask,
             target_hidden_states=target_hidden_states,
             target_last_hidden_states=target_last_hidden_states,
+            hidden_dtype=self.hidden_dtype,
         )
         self.write_sample_bytes(sample)
 
@@ -414,10 +435,13 @@ class AsyncTargetCacheWriter:
         rank_dir: str,
         max_shard_bytes: int,
         max_queue_size: int = 128,
+        hidden_dtype: str = "bfloat16",
     ):
+        self.hidden_dtype = hidden_dtype
         self.writer = LocalTargetCacheWriter(
             rank_dir=rank_dir,
             max_shard_bytes=max_shard_bytes,
+            hidden_dtype=hidden_dtype,
         )
         # Queue CPU byte records only; never hold CUDA tensor references here.
         self.queue = queue.Queue(maxsize=int(max_queue_size))
@@ -483,6 +507,7 @@ class AsyncTargetCacheWriter:
             loss_mask=loss_mask,
             target_hidden_states=target_hidden_states,
             target_last_hidden_states=target_last_hidden_states,
+            hidden_dtype=self.hidden_dtype,
         )
         self._put(sample)
         self.num_local_samples += 1
@@ -583,6 +608,7 @@ def build_target_cache_manifest(
     shards,
     target_layer_ids,
     hidden_size: int,
+    hidden_dtype: str = "bfloat16",
     extra_fields=None,
 ):
     manifest = {
@@ -590,7 +616,7 @@ def build_target_cache_manifest(
         "num_samples": int(num_samples),
         "num_shards": len(shards),
         "target_layer_ids": [int(layer_id) for layer_id in target_layer_ids],
-        "hidden_dtype": TARGET_CACHE_HIDDEN_DTYPE,
+        "hidden_dtype": hidden_dtype,
         "token_dtype": TARGET_CACHE_TOKEN_DTYPE,
         "mask_dtype": TARGET_CACHE_MASK_DTYPE,
         "index_record_size": INDEX_RECORD_SIZE,
@@ -621,6 +647,7 @@ class CacheDataset(torch.utils.data.Dataset):
         self.hidden_size = int(self.manifest["hidden_size"])
         self.target_layer_ids = [int(layer_id) for layer_id in self.manifest["target_layer_ids"]]
         self.num_target_layers = len(self.target_layer_ids)
+        self.hidden_dtype = self.manifest.get("hidden_dtype", "bfloat16")
         self.index_path = os.path.join(self.cache_dir, "samples.idx")
         self.index_file = None
         self.index_mmap = None
@@ -750,6 +777,28 @@ class CacheDataset(torch.utils.data.Dataset):
         tensor = torch.from_numpy(array).view(torch.bfloat16)
         return tensor.view(*shape)
 
+    def _read_float8_tensor_from_shard(
+        self,
+        *,
+        shard_mmap,
+        offset: int,
+        shape,
+        nbytes: int,
+        torch_dtype,
+    ):
+        assert int(offset) + int(nbytes) <= shard_mmap.size(), (
+            "Target cache tensor extends beyond shard size: "
+            f"offset={offset}, nbytes={nbytes}, shard_size={shard_mmap.size()}"
+        )
+        array = np.frombuffer(
+            shard_mmap,
+            dtype=np.uint8,
+            count=int(np.prod(shape)),
+            offset=int(offset),
+        ).copy()
+        tensor = torch.from_numpy(array).view(torch_dtype)
+        return tensor.view(*shape)
+
     def __getitem__(self, index: int):
         if not (0 <= int(index) < self.num_samples):
             raise IndexError(index)
@@ -761,6 +810,7 @@ class CacheDataset(torch.utils.data.Dataset):
             seq_len=seq_len,
             hidden_size=self.hidden_size,
             num_target_layers=self.num_target_layers,
+            hidden_dtype=self.hidden_dtype,
         )
         input_ids = self._read_tensor_from_shard(
             shard_mmap=shard_mmap,
@@ -778,18 +828,51 @@ class CacheDataset(torch.utils.data.Dataset):
             torch_dtype=torch.uint8,
             nbytes=nbytes["loss_mask"],
         )
-        target_hidden_states = self._read_bfloat16_tensor_from_shard(
-            shard_mmap=shard_mmap,
-            offset=record["target_hidden_states_offset"],
-            shape=(seq_len, self.num_target_layers * self.hidden_size),
-            nbytes=nbytes["target_hidden_states"],
-        )
-        target_last_hidden_states = self._read_bfloat16_tensor_from_shard(
-            shard_mmap=shard_mmap,
-            offset=record["target_last_hidden_states_offset"],
-            shape=(seq_len, self.hidden_size),
-            nbytes=nbytes["target_last_hidden_states"],
-        )
+        if self.hidden_dtype == "bfloat16":
+            target_hidden_states = self._read_bfloat16_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_hidden_states_offset"],
+                shape=(seq_len, self.num_target_layers * self.hidden_size),
+                nbytes=nbytes["target_hidden_states"],
+            )
+            target_last_hidden_states = self._read_bfloat16_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_last_hidden_states_offset"],
+                shape=(seq_len, self.hidden_size),
+                nbytes=nbytes["target_last_hidden_states"],
+            )
+        elif self.hidden_dtype == "float8_e4m3fn":
+            target_hidden_states = self._read_float8_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_hidden_states_offset"],
+                shape=(seq_len, self.num_target_layers * self.hidden_size),
+                nbytes=nbytes["target_hidden_states"],
+                torch_dtype=torch.float8_e4m3fn,
+            ).to(dtype=torch.bfloat16)
+            target_last_hidden_states = self._read_float8_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_last_hidden_states_offset"],
+                shape=(seq_len, self.hidden_size),
+                nbytes=nbytes["target_last_hidden_states"],
+                torch_dtype=torch.float8_e4m3fn,
+            ).to(dtype=torch.bfloat16)
+        elif self.hidden_dtype == "float8_e5m2":
+            target_hidden_states = self._read_float8_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_hidden_states_offset"],
+                shape=(seq_len, self.num_target_layers * self.hidden_size),
+                nbytes=nbytes["target_hidden_states"],
+                torch_dtype=torch.float8_e5m2,
+            ).to(dtype=torch.bfloat16)
+            target_last_hidden_states = self._read_float8_tensor_from_shard(
+                shard_mmap=shard_mmap,
+                offset=record["target_last_hidden_states_offset"],
+                shape=(seq_len, self.hidden_size),
+                nbytes=nbytes["target_last_hidden_states"],
+                torch_dtype=torch.float8_e5m2,
+            ).to(dtype=torch.bfloat16)
+        else:
+            raise ValueError(f"Unsupported hidden_dtype: {self.hidden_dtype}")
         return {
             "input_ids": input_ids,
             "loss_mask": loss_mask,
