@@ -158,6 +158,31 @@ def _log_eagle3_prefix_metrics(
     add_metric("tau_probabilistic", tau_prob_sum, den=tau_count, tag="train")
 
 
+def _compute_tv_acceptance_mask(
+    *,
+    draft_logits: torch.Tensor,
+    target_probs: torch.Tensor,
+    position_mask: torch.Tensor,
+) -> torch.Tensor:
+    draft_probs = torch.softmax(draft_logits.float(), dim=-1)
+    overlap = torch.minimum(draft_probs, target_probs.float()).sum(dim=-1)
+    valid_mask = position_mask.squeeze(-1).to(torch.float32)
+    return overlap * valid_mask
+
+
+def _compute_e2e_tv_loss(
+    *,
+    accept_rate_masks: list[torch.Tensor],
+    start_valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    accept_rate_tensor = torch.stack(accept_rate_masks, dim=0).to(torch.float32)
+    prefix_acceptance = accept_rate_tensor.cumprod(dim=0).sum(dim=0)
+    normalized_acceptance = prefix_acceptance / float(len(accept_rate_masks))
+    per_position_loss = (1.0 - normalized_acceptance) * start_valid_mask
+    denominator = start_valid_mask.sum().clamp_min(1.0)
+    return per_position_loss.sum() / denominator
+
+
 @triton.jit
 def _log_softmax_forward_kernel(
     logits_ptr,
@@ -357,6 +382,7 @@ def compute_eagle3_loss(
     batch: dict[str, torch.Tensor],
     ttt_length: int,
     step_loss_decay: float,
+    loss_type: str = "soft_ce",
 ) -> torch.Tensor:
     input_ids = batch["input_ids"].long()
     attention_mask = batch["attention_mask"].long()
@@ -398,7 +424,13 @@ def compute_eagle3_loss(
 
     correct_masks = []
     accept_rate_masks = []
+    tv_accept_rate_masks = []
     valid_masks = []
+    loss_type = str(loss_type)
+    assert loss_type in ("soft_ce", "e2e_tv"), (
+        "loss_type must be one of {'soft_ce', 'e2e_tv'}, "
+        f"got {loss_type!r}."
+    )
     for step_idx in range(int(ttt_length)):
         # Keep this slice alignment in sync with the Eagle3 reference.
         target_step_probs = target_probs[
@@ -427,21 +459,43 @@ def compute_eagle3_loss(
         correct_masks.append(correct_mask)
         accept_rate_masks.append(accept_rate_mask)
         valid_masks.append(valid_mask)
-        step_loss = FusedLogSoftmaxLoss.apply(
-            output.draft_logits,
-            target_step_probs,
-            position_mask_step,
-            loss_normalizers[step_idx],
+        if loss_type == "soft_ce":
+            step_loss = FusedLogSoftmaxLoss.apply(
+                output.draft_logits,
+                target_step_probs,
+                position_mask_step,
+                loss_normalizers[step_idx],
+            )
+            add_metric(
+                f"ploss_{step_idx}",
+                step_loss.detach(),
+                reduction="dp_mean",
+                tag="train",
+            )
+            step_weight = float(step_loss_decay) ** step_idx
+            total_loss = total_loss + step_loss * step_weight
+        else:
+            tv_accept_rate_masks.append(
+                _compute_tv_acceptance_mask(
+                    draft_logits=output.draft_logits,
+                    target_probs=target_step_probs,
+                    position_mask=position_mask_step,
+                )
+            )
+        current_input_ids = _shift_with_zero_padding(current_input_ids, left=False)
+
+    if loss_type == "e2e_tv":
+        start_valid_mask = valid_masks[0].to(torch.float32)
+        total_loss = _compute_e2e_tv_loss(
+            accept_rate_masks=tv_accept_rate_masks,
+            start_valid_mask=start_valid_mask,
         )
         add_metric(
-            f"ploss_{step_idx}",
-            step_loss.detach(),
+            "e2e_tv_loss",
+            total_loss.detach(),
             reduction="dp_mean",
             tag="train",
         )
-        step_weight = float(step_loss_decay) ** step_idx
-        total_loss = total_loss + step_loss * step_weight
-        current_input_ids = _shift_with_zero_padding(current_input_ids, left=False)
 
     _log_eagle3_prefix_metrics(
         correct_masks=correct_masks,

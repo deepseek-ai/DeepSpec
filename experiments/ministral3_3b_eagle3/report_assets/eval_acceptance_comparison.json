@@ -1,0 +1,65 @@
+[
+  {
+    "dataset": "gsm8k",
+    "delta": -2.296284255273641,
+    "label": "GSM8K",
+    "ministral3_3b_eagle3": 2.843715744726359,
+    "qwen3_4b_eagle3": 5.14
+  },
+  {
+    "dataset": "math500",
+    "delta": -1.5230024237028243,
+    "label": "MATH",
+    "ministral3_3b_eagle3": 3.0969975762971758,
+    "qwen3_4b_eagle3": 4.62
+  },
+  {
+    "dataset": "aime25",
+    "delta": -1.0425132859897475,
+    "label": "AIME25",
+    "ministral3_3b_eagle3": 2.8774867140102525,
+    "qwen3_4b_eagle3": 3.92
+  },
+  {
+    "dataset": "mbpp",
+    "delta": -1.2256578443930595,
+    "label": "MBPP",
+    "ministral3_3b_eagle3": 2.4643421556069405,
+    "qwen3_4b_eagle3": 3.69
+  },
+  {
+    "dataset": "humaneval",
+    "delta": -1.5595768611779173,
+    "label": "HumanEval",
+    "ministral3_3b_eagle3": 2.600423138822083,
+    "qwen3_4b_eagle3": 4.16
+  },
+  {
+    "dataset": "livecodebench",
+    "delta": -1.5047376374946562,
+    "label": "LCB",
+    "ministral3_3b_eagle3": 2.265262362505344,
+    "qwen3_4b_eagle3": 3.77
+  },
+  {
+    "dataset": "mt-bench",
+    "delta": -0.5001109907958854,
+    "label": "MT-Bench",
+    "ministral3_3b_eagle3": 1.8898890092041147,
+    "qwen3_4b_eagle3": 2.39
+  },
+  {
+    "dataset": "alpaca",
+    "delta": -0.42997873936968456,
+    "label": "Alpaca",
+    "ministral3_3b_eagle3": 1.8300212606303152,
+    "qwen3_4b_eagle3": 2.26
+  },
+  {
+    "dataset": "arena-hard-v2",
+    "delta": -0.855662059518115,
+    "label": "Arena-Hard",
+    "ministral3_3b_eagle3": 1.6943379404818848,
+    "qwen3_4b_eagle3": 2.55
+  }
+]

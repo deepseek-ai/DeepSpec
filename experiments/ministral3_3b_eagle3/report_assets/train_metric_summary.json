@@ -1,0 +1,134 @@
+{
+  "train/accept_rate@0": {
+    "step": 3000,
+    "value": 0.7828433513641357
+  },
+  "train/accept_rate@1": {
+    "step": 3000,
+    "value": 0.7800154685974121
+  },
+  "train/accept_rate@2": {
+    "step": 3000,
+    "value": 0.7808699011802673
+  },
+  "train/accept_rate@3": {
+    "step": 3000,
+    "value": 0.7791018486022949
+  },
+  "train/accept_rate@4": {
+    "step": 3000,
+    "value": 0.7734428644180298
+  },
+  "train/accept_rate@5": {
+    "step": 3000,
+    "value": 0.7620912194252014
+  },
+  "train/accept_rate@6": {
+    "step": 3000,
+    "value": 0.740893542766571
+  },
+  "train/accuracy@0": {
+    "step": 3000,
+    "value": 0.8395382761955261
+  },
+  "train/accuracy@1": {
+    "step": 3000,
+    "value": 0.8423240184783936
+  },
+  "train/accuracy@2": {
+    "step": 3000,
+    "value": 0.848247230052948
+  },
+  "train/accuracy@3": {
+    "step": 3000,
+    "value": 0.851127028465271
+  },
+  "train/accuracy@4": {
+    "step": 3000,
+    "value": 0.8497721552848816
+  },
+  "train/accuracy@5": {
+    "step": 3000,
+    "value": 0.8434146046638489
+  },
+  "train/accuracy@6": {
+    "step": 3000,
+    "value": 0.8280242085456848
+  },
+  "train/grad_norm": {
+    "step": 3000,
+    "value": 0.078125
+  },
+  "train/loss": {
+    "step": 3000,
+    "value": 2.1320221424102783
+  },
+  "train/lr": {
+    "step": 3000,
+    "value": 0.0
+  },
+  "train/ploss_0": {
+    "step": 3000,
+    "value": 0.5350198745727539
+  },
+  "train/ploss_1": {
+    "step": 3000,
+    "value": 0.535610020160675
+  },
+  "train/ploss_2": {
+    "step": 3000,
+    "value": 0.5331065654754639
+  },
+  "train/ploss_3": {
+    "step": 3000,
+    "value": 0.5346406698226929
+  },
+  "train/ploss_4": {
+    "step": 3000,
+    "value": 0.540634036064148
+  },
+  "train/ploss_5": {
+    "step": 3000,
+    "value": 0.552795946598053
+  },
+  "train/ploss_6": {
+    "step": 3000,
+    "value": 0.5760428309440613
+  },
+  "train/tau_greedy": {
+    "step": 3000,
+    "value": 5.192190647125244
+  },
+  "train/tau_probabilistic": {
+    "step": 3000,
+    "value": 4.4316630363464355
+  },
+  "train/valid_tokens@0": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@1": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@2": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@3": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@4": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@5": {
+    "step": 3000,
+    "value": 8655.0615234375
+  },
+  "train/valid_tokens@6": {
+    "step": 3000,
+    "value": 8655.0615234375
+  }
+}

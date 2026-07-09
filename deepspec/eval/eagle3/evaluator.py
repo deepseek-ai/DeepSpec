@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from transformers import DynamicCache
 
 from deepspec.eval.base_evaluator import (
     BaseEvaluator,
@@ -15,7 +15,9 @@ from deepspec.eval.base_evaluator import (
 )
 from deepspec.modeling.eagle3 import extract_eagle3_context_feature
 from deepspec.modeling.eagle3.gemma4 import Gemma4Eagle3Model
+from deepspec.modeling.eagle3.ministral3 import Ministral3Eagle3Model
 from deepspec.modeling.eagle3.qwen3 import Qwen3Eagle3Model
+from deepspec.modeling.target_utils import load_target_causal_lm, load_target_tokenizer
 from deepspec.utils.sampling import logits_to_probs, sample_tokens
 
 
@@ -40,8 +42,8 @@ class Qwen3Eagle3Evaluator(BaseEvaluator):
     def max_proposal_tokens(self) -> int:
         return int(self.draft_model.ttt_length)
 
-    def build_models(self) -> tuple[object, Qwen3Eagle3Model, AutoTokenizer]:
-        target_model = AutoModelForCausalLM.from_pretrained(
+    def build_models(self) -> tuple[object, Qwen3Eagle3Model, object]:
+        target_model = load_target_causal_lm(
             self.args.target_name_or_path,
             dtype=torch.bfloat16,
             attn_implementation=self.EVAL_ATTN_IMPLEMENTATION,
@@ -55,7 +57,7 @@ class Qwen3Eagle3Evaluator(BaseEvaluator):
         draft_model.target_layer_ids = [int(x) for x in draft_model.target_layer_ids]
         assert_no_final_target_layer(target_model, draft_model.target_layer_ids)
 
-        tokenizer = AutoTokenizer.from_pretrained(self.args.target_name_or_path)
+        tokenizer = load_target_tokenizer(self.args.target_name_or_path)
         return target_model, draft_model, tokenizer
 
     def _init_context(
@@ -192,4 +194,12 @@ class Gemma4Eagle3Evaluator(Qwen3Eagle3Evaluator):
     draft_model_cls = Gemma4Eagle3Model
 
 
-__all__ = ["Gemma4Eagle3Evaluator", "Qwen3Eagle3Evaluator"]
+class Ministral3Eagle3Evaluator(Qwen3Eagle3Evaluator):
+    draft_model_cls = Ministral3Eagle3Model
+
+
+__all__ = [
+    "Gemma4Eagle3Evaluator",
+    "Ministral3Eagle3Evaluator",
+    "Qwen3Eagle3Evaluator",
+]

@@ -50,6 +50,16 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
+TEMPLATE_REGISTRY.register(
+    "ministral3",
+    ChatTemplate(
+        assistant_header="[/INST]",
+        user_header="[INST]",
+        system_prompt=None,
+        end_of_turn_token="</s>",
+    ),
+)
+
 
 class GeneralParser:
     def __init__(self, tokenizer, chat_template):

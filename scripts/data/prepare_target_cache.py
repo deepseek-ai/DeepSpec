@@ -3,10 +3,12 @@ from dataclasses import dataclass
 import json
 import os
 
+os.environ["USE_HUB_KERNELS"] = "0"
+
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Subset
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel
 
 from deepspec.data import ConversationCollator
 from deepspec.data.target_cache_dataset import (
@@ -22,6 +24,11 @@ from deepspec.data.target_cache_dataset import (
     prepare_target_cache_output_dir,
     rename_local_target_cache_shards,
     write_target_cache_manifest,
+)
+from deepspec.modeling.target_utils import (
+    get_target_backbone,
+    get_target_hidden_size,
+    load_target_tokenizer,
 )
 from deepspec.data.jsonl_dataset import JsonLineDataset
 from deepspec.utils import (
@@ -52,24 +59,6 @@ class TargetForwardResult:
     target_last_hidden_states: torch.Tensor
 
 
-def _get_target_backbone(target_model):
-    model_type = str(target_model.config.model_type)
-    if model_type in ("gemma4", "gemma4_unified"):
-        if hasattr(target_model, "language_model"):
-            return target_model.language_model
-        if hasattr(target_model, "model") and hasattr(target_model.model, "language_model"):
-            return target_model.model.language_model
-        assert False, "Gemma4 target model must expose a text language_model."
-    return getattr(target_model, "model", target_model)
-
-
-def _get_target_hidden_size(target_model) -> int:
-    model_type = str(target_model.config.model_type)
-    if model_type in ("gemma4", "gemma4_unified"):
-        return int(target_model.config.text_config.hidden_size)
-    return int(target_model.config.hidden_size)
-
-
 def _get_hook_tensor(output):
     if isinstance(output, torch.Tensor):
         return output
@@ -87,7 +76,7 @@ def run_target_forward_with_hooks(
     attention_mask: torch.Tensor,
     target_layer_ids,
 ):
-    backbone = _get_target_backbone(target_model)
+    backbone = get_target_backbone(target_model)
     layer_modules = backbone.layers
     target_layer_ids = [int(layer_id) for layer_id in target_layer_ids]
     captured_hidden_states = {}
@@ -248,7 +237,7 @@ def main(local_rank: int):
     local_total_samples = local_end - local_start
 
     local_subset = Subset(dataset, range(local_start, local_end))
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer = load_target_tokenizer(
         config.model.target_model_name_or_path,
     )
     target_model = AutoModel.from_pretrained(
@@ -256,7 +245,7 @@ def main(local_rank: int):
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
     ).to(device=device).eval()
-    target_hidden_size = _get_target_hidden_size(target_model)
+    target_hidden_size = get_target_hidden_size(target_model)
     train_collator = ConversationCollator(
         tokenizer=tokenizer,
         chat_template=config.data.chat_template,

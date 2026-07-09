@@ -702,12 +702,38 @@ class BaseEvaluator:
         )
         self.metrics_rows.append(metrics_row)
         self.print_dataset_result(metrics_row)
+        self.write_output_json(complete=False)
         return metrics_row
+
+    def write_output_json(self, *, complete: bool) -> None:
+        if (
+            self.args.output_json is None
+            or dist.get_rank() != 0
+            or not self.metrics_rows
+        ):
+            return
+        output_path = Path(self.args.output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "target_model": self.args.target_name_or_path,
+                    "draft_model": self.args.draft_name_or_path,
+                    "step": self.args.step,
+                    "complete": complete,
+                    "rows": self.metrics_rows,
+                },
+                handle,
+                indent=2,
+            )
+        tmp_path.replace(output_path)
 
     def report_results(self) -> None:
         if dist.get_rank() == 0 and self.metrics_rows:
             if self.args.tensorboard_dir is not None:
                 self.log_tensorboard()
+            self.write_output_json(complete=True)
         self.print_results()
 
     def evaluate(self) -> None:

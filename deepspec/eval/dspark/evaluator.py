@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from transformers import AutoTokenizer, DynamicCache
 
 from deepspec.eval.base_evaluator import (
     BaseEvaluator,
@@ -21,7 +21,9 @@ from deepspec.eval.dspark.draft_ops import (
 )
 from deepspec.modeling.dspark.common import extract_context_feature
 from deepspec.modeling.dspark.gemma4 import Gemma4DSparkModel
+from deepspec.modeling.dspark.ministral3 import Ministral3DSparkModel
 from deepspec.modeling.dspark.qwen3 import Qwen3DSparkModel
+from deepspec.modeling.target_utils import load_target_causal_lm, load_target_tokenizer
 from deepspec.utils import jsonable
 
 
@@ -66,7 +68,7 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
         )
 
     def build_models(self) -> tuple[object, Qwen3DSparkModel, AutoTokenizer]:
-        target_model = AutoModelForCausalLM.from_pretrained(
+        target_model = load_target_causal_lm(
             self.args.target_name_or_path,
             dtype=torch.bfloat16,
             attn_implementation=self.EVAL_ATTN_IMPLEMENTATION,
@@ -79,7 +81,7 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
         ).to(self.device).eval()
         assert_no_final_target_layer(target_model, draft_model.target_layer_ids)
         assert 0.0 <= float(self.args.confidence_threshold) <= 1.0
-        tokenizer = AutoTokenizer.from_pretrained(self.args.target_name_or_path)
+        tokenizer = load_target_tokenizer(self.args.target_name_or_path)
         return target_model, draft_model, tokenizer
 
     def _init_context(
@@ -223,3 +225,7 @@ class Qwen3DSparkEvaluator(BaseEvaluator):
 
 class Gemma4DSparkEvaluator(Qwen3DSparkEvaluator):
     draft_model_cls = Gemma4DSparkModel
+
+
+class Ministral3DSparkEvaluator(Qwen3DSparkEvaluator):
+    draft_model_cls = Ministral3DSparkModel

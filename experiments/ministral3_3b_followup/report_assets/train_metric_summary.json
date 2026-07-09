@@ -1,0 +1,756 @@
+{
+  "dspark": {
+    "train/accept_rate@0": {
+      "step": 3000,
+      "value": 0.9088855385780334
+    },
+    "train/accept_rate@1": {
+      "step": 3000,
+      "value": 0.8897278308868408
+    },
+    "train/accept_rate@2": {
+      "step": 3000,
+      "value": 0.8809123039245605
+    },
+    "train/accept_rate@3": {
+      "step": 3000,
+      "value": 0.8716825246810913
+    },
+    "train/accept_rate@4": {
+      "step": 3000,
+      "value": 0.8612305521965027
+    },
+    "train/accept_rate@5": {
+      "step": 3000,
+      "value": 0.8470444679260254
+    },
+    "train/accept_rate@6": {
+      "step": 3000,
+      "value": 0.8207354545593262
+    },
+    "train/block_supervised_tokens_abs": {
+      "step": 3000,
+      "value": 6.933074951171875
+    },
+    "train/block_supervised_tokens_ratio": {
+      "step": 3000,
+      "value": 0.990439236164093
+    },
+    "train/ce_loss": {
+      "step": 3000,
+      "value": 0.48387807607650757
+    },
+    "train/confidence_abs_error": {
+      "step": 3000,
+      "value": 0.023252103477716446
+    },
+    "train/confidence_bias": {
+      "step": 3000,
+      "value": -5.7178334827767685e-05
+    },
+    "train/confidence_cumprod_bias": {
+      "step": 3000,
+      "value": -6.912671960890293e-05
+    },
+    "train/confidence_loss": {
+      "step": 3000,
+      "value": 0.20054055750370026
+    },
+    "train/grad_norm": {
+      "step": 3000,
+      "value": 0.032470703125
+    },
+    "train/l1_loss": {
+      "step": 3000,
+      "value": 0.23794984817504883
+    },
+    "train/loss": {
+      "step": 3000,
+      "value": 0.421601265668869
+    },
+    "train/lr": {
+      "step": 3000,
+      "value": 0.0
+    },
+    "train/sampled_anchors_abs": {
+      "step": 3000,
+      "value": 395.5830078125
+    },
+    "train/sampled_anchors_ratio": {
+      "step": 3000,
+      "value": 0.7726230621337891
+    },
+    "train/tau_probabilistic": {
+      "step": 3000,
+      "value": 5.878182888031006
+    },
+    "train/valid_anchors_abs": {
+      "step": 3000,
+      "value": 1081.6539306640625
+    },
+    "train/valid_anchors_ratio": {
+      "step": 3000,
+      "value": 0.4878362715244293
+    }
+  },
+  "e2e_tv_from_kl": {
+    "train/accept_rate@0": {
+      "step": 200,
+      "value": 0.7781164646148682
+    },
+    "train/accept_rate@1": {
+      "step": 200,
+      "value": 0.7581328749656677
+    },
+    "train/accept_rate@2": {
+      "step": 200,
+      "value": 0.7466332912445068
+    },
+    "train/accept_rate@3": {
+      "step": 200,
+      "value": 0.7343856692314148
+    },
+    "train/accept_rate@4": {
+      "step": 200,
+      "value": 0.7194052934646606
+    },
+    "train/accept_rate@5": {
+      "step": 200,
+      "value": 0.699884295463562
+    },
+    "train/accept_rate@6": {
+      "step": 200,
+      "value": 0.673882246017456
+    },
+    "train/accuracy@0": {
+      "step": 200,
+      "value": 0.8129783272743225
+    },
+    "train/accuracy@1": {
+      "step": 200,
+      "value": 0.7957897782325745
+    },
+    "train/accuracy@2": {
+      "step": 200,
+      "value": 0.7881194949150085
+    },
+    "train/accuracy@3": {
+      "step": 200,
+      "value": 0.7789853811264038
+    },
+    "train/accuracy@4": {
+      "step": 200,
+      "value": 0.7666359543800354
+    },
+    "train/accuracy@5": {
+      "step": 200,
+      "value": 0.7496271133422852
+    },
+    "train/accuracy@6": {
+      "step": 200,
+      "value": 0.7254096269607544
+    },
+    "train/e2e_tv_loss": {
+      "step": 200,
+      "value": 0.4276648163795471
+    },
+    "train/grad_norm": {
+      "step": 200,
+      "value": 0.169921875
+    },
+    "train/loss": {
+      "step": 200,
+      "value": 0.4276648163795471
+    },
+    "train/lr": {
+      "step": 200,
+      "value": 0.0005988585762679577
+    },
+    "train/tau_greedy": {
+      "step": 200,
+      "value": 4.651768207550049
+    },
+    "train/tau_probabilistic": {
+      "step": 200,
+      "value": 4.2134552001953125
+    },
+    "train/valid_tokens@0": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@1": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@2": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@3": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@4": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@5": {
+      "step": 200,
+      "value": 17565.32421875
+    },
+    "train/valid_tokens@6": {
+      "step": 200,
+      "value": 17565.32421875
+    }
+  },
+  "e2e_tv_from_kl_lr1e4": {
+    "train/accept_rate@0": {
+      "step": 100,
+      "value": 0.7892638444900513
+    },
+    "train/accept_rate@1": {
+      "step": 100,
+      "value": 0.7840483784675598
+    },
+    "train/accept_rate@2": {
+      "step": 100,
+      "value": 0.782526969909668
+    },
+    "train/accept_rate@3": {
+      "step": 100,
+      "value": 0.7784999012947083
+    },
+    "train/accept_rate@4": {
+      "step": 100,
+      "value": 0.7707067728042603
+    },
+    "train/accept_rate@5": {
+      "step": 100,
+      "value": 0.7571341395378113
+    },
+    "train/accept_rate@6": {
+      "step": 100,
+      "value": 0.7336140275001526
+    },
+    "train/accuracy@0": {
+      "step": 100,
+      "value": 0.8327452540397644
+    },
+    "train/accuracy@1": {
+      "step": 100,
+      "value": 0.8321753144264221
+    },
+    "train/accuracy@2": {
+      "step": 100,
+      "value": 0.8354985117912292
+    },
+    "train/accuracy@3": {
+      "step": 100,
+      "value": 0.8355039954185486
+    },
+    "train/accuracy@4": {
+      "step": 100,
+      "value": 0.8315221071243286
+    },
+    "train/accuracy@5": {
+      "step": 100,
+      "value": 0.8220247030258179
+    },
+    "train/accuracy@6": {
+      "step": 100,
+      "value": 0.8026746511459351
+    },
+    "train/e2e_tv_loss": {
+      "step": 100,
+      "value": 0.39172640442848206
+    },
+    "train/grad_norm": {
+      "step": 100,
+      "value": 0.2734375
+    },
+    "train/loss": {
+      "step": 100,
+      "value": 0.39172640442848206
+    },
+    "train/lr": {
+      "step": 100,
+      "value": 8.416666969424114e-05
+    },
+    "train/tau_greedy": {
+      "step": 100,
+      "value": 5.037959575653076
+    },
+    "train/tau_probabilistic": {
+      "step": 100,
+      "value": 4.44346809387207
+    },
+    "train/valid_tokens@0": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@1": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@2": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@3": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@4": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@5": {
+      "step": 100,
+      "value": 17705.19921875
+    },
+    "train/valid_tokens@6": {
+      "step": 100,
+      "value": 17705.19921875
+    }
+  },
+  "e2e_tv_from_kl_lr1e4_8gpu": {
+    "train/accept_rate@0": {
+      "step": 960,
+      "value": 0.8107576966285706
+    },
+    "train/accept_rate@1": {
+      "step": 960,
+      "value": 0.8032916188240051
+    },
+    "train/accept_rate@2": {
+      "step": 960,
+      "value": 0.799018919467926
+    },
+    "train/accept_rate@3": {
+      "step": 960,
+      "value": 0.7926272749900818
+    },
+    "train/accept_rate@4": {
+      "step": 960,
+      "value": 0.782906711101532
+    },
+    "train/accept_rate@5": {
+      "step": 960,
+      "value": 0.7681045532226562
+    },
+    "train/accept_rate@6": {
+      "step": 960,
+      "value": 0.7443888783454895
+    },
+    "train/accuracy@0": {
+      "step": 960,
+      "value": 0.8468327522277832
+    },
+    "train/accuracy@1": {
+      "step": 960,
+      "value": 0.8427723050117493
+    },
+    "train/accuracy@2": {
+      "step": 960,
+      "value": 0.841855525970459
+    },
+    "train/accuracy@3": {
+      "step": 960,
+      "value": 0.8381909728050232
+    },
+    "train/accuracy@4": {
+      "step": 960,
+      "value": 0.8310334086418152
+    },
+    "train/accuracy@5": {
+      "step": 960,
+      "value": 0.8190454840660095
+    },
+    "train/accuracy@6": {
+      "step": 960,
+      "value": 0.798031747341156
+    },
+    "train/e2e_tv_loss": {
+      "step": 960,
+      "value": 0.34104272723197937
+    },
+    "train/grad_norm": {
+      "step": 960,
+      "value": 0.2021484375
+    },
+    "train/loss": {
+      "step": 960,
+      "value": 0.34104272723197937
+    },
+    "train/lr": {
+      "step": 960,
+      "value": 8.043809793889523e-05
+    },
+    "train/tau_greedy": {
+      "step": 960,
+      "value": 5.260736465454102
+    },
+    "train/tau_probabilistic": {
+      "step": 960,
+      "value": 4.743100643157959
+    },
+    "train/valid_tokens@0": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@1": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@2": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@3": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@4": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@5": {
+      "step": 960,
+      "value": 8670.4453125
+    },
+    "train/valid_tokens@6": {
+      "step": 960,
+      "value": 8670.4453125
+    }
+  },
+  "e2e_tv_ttt5": {
+    "train/accept_rate@0": {
+      "step": 340,
+      "value": 0.3088866174221039
+    },
+    "train/accept_rate@1": {
+      "step": 340,
+      "value": 0.23770467936992645
+    },
+    "train/accept_rate@2": {
+      "step": 340,
+      "value": 0.19424673914909363
+    },
+    "train/accept_rate@3": {
+      "step": 340,
+      "value": 0.16263574361801147
+    },
+    "train/accept_rate@4": {
+      "step": 340,
+      "value": 0.13550451397895813
+    },
+    "train/accuracy@0": {
+      "step": 340,
+      "value": 0.309736967086792
+    },
+    "train/accuracy@1": {
+      "step": 340,
+      "value": 0.23738116025924683
+    },
+    "train/accuracy@2": {
+      "step": 340,
+      "value": 0.19608260691165924
+    },
+    "train/accuracy@3": {
+      "step": 340,
+      "value": 0.1679745316505432
+    },
+    "train/accuracy@4": {
+      "step": 340,
+      "value": 0.14486446976661682
+    },
+    "train/e2e_tv_loss": {
+      "step": 340,
+      "value": 0.8811959028244019
+    },
+    "train/grad_norm": {
+      "step": 340,
+      "value": 0.0191650390625
+    },
+    "train/loss": {
+      "step": 340,
+      "value": 0.8811959028244019
+    },
+    "train/lr": {
+      "step": 340,
+      "value": 0.0005914028151892126
+    },
+    "train/tau_greedy": {
+      "step": 340,
+      "value": 1.490090012550354
+    },
+    "train/tau_probabilistic": {
+      "step": 340,
+      "value": 1.483672022819519
+    },
+    "train/valid_tokens@0": {
+      "step": 340,
+      "value": 17375.681640625
+    },
+    "train/valid_tokens@1": {
+      "step": 340,
+      "value": 17375.681640625
+    },
+    "train/valid_tokens@2": {
+      "step": 340,
+      "value": 17375.681640625
+    },
+    "train/valid_tokens@3": {
+      "step": 340,
+      "value": 17375.681640625
+    },
+    "train/valid_tokens@4": {
+      "step": 340,
+      "value": 17375.681640625
+    }
+  },
+  "e2e_tv_ttt7": {
+    "train/accept_rate@0": {
+      "step": 860,
+      "value": 0.3942939341068268
+    },
+    "train/accept_rate@1": {
+      "step": 860,
+      "value": 0.3225947618484497
+    },
+    "train/accept_rate@2": {
+      "step": 860,
+      "value": 0.27505242824554443
+    },
+    "train/accept_rate@3": {
+      "step": 860,
+      "value": 0.2398243099451065
+    },
+    "train/accept_rate@4": {
+      "step": 860,
+      "value": 0.2107917219400406
+    },
+    "train/accept_rate@5": {
+      "step": 860,
+      "value": 0.18418195843696594
+    },
+    "train/accept_rate@6": {
+      "step": 860,
+      "value": 0.15908914804458618
+    },
+    "train/accuracy@0": {
+      "step": 860,
+      "value": 0.3965262472629547
+    },
+    "train/accuracy@1": {
+      "step": 860,
+      "value": 0.32414039969444275
+    },
+    "train/accuracy@2": {
+      "step": 860,
+      "value": 0.27784740924835205
+    },
+    "train/accuracy@3": {
+      "step": 860,
+      "value": 0.24515438079833984
+    },
+    "train/accuracy@4": {
+      "step": 860,
+      "value": 0.22068458795547485
+    },
+    "train/accuracy@5": {
+      "step": 860,
+      "value": 0.19971370697021484
+    },
+    "train/accuracy@6": {
+      "step": 860,
+      "value": 0.18134939670562744
+    },
+    "train/e2e_tv_loss": {
+      "step": 860,
+      "value": 0.8688939809799194
+    },
+    "train/grad_norm": {
+      "step": 860,
+      "value": 0.0220947265625
+    },
+    "train/loss": {
+      "step": 860,
+      "value": 0.8688939809799194
+    },
+    "train/lr": {
+      "step": 860,
+      "value": 0.0005074540385976434
+    },
+    "train/tau_greedy": {
+      "step": 860,
+      "value": 1.7387313842773438
+    },
+    "train/tau_probabilistic": {
+      "step": 860,
+      "value": 1.7238452434539795
+    },
+    "train/valid_tokens@0": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@1": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@2": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@3": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@4": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@5": {
+      "step": 860,
+      "value": 17503.728515625
+    },
+    "train/valid_tokens@6": {
+      "step": 860,
+      "value": 17503.728515625
+    }
+  },
+  "kl_baseline": {
+    "train/accept_rate@0": {
+      "step": 3000,
+      "value": 0.7828433513641357
+    },
+    "train/accept_rate@1": {
+      "step": 3000,
+      "value": 0.7800154685974121
+    },
+    "train/accept_rate@2": {
+      "step": 3000,
+      "value": 0.7808699011802673
+    },
+    "train/accept_rate@3": {
+      "step": 3000,
+      "value": 0.7791018486022949
+    },
+    "train/accept_rate@4": {
+      "step": 3000,
+      "value": 0.7734428644180298
+    },
+    "train/accept_rate@5": {
+      "step": 3000,
+      "value": 0.7620912194252014
+    },
+    "train/accept_rate@6": {
+      "step": 3000,
+      "value": 0.740893542766571
+    },
+    "train/accuracy@0": {
+      "step": 3000,
+      "value": 0.8395382761955261
+    },
+    "train/accuracy@1": {
+      "step": 3000,
+      "value": 0.8423240184783936
+    },
+    "train/accuracy@2": {
+      "step": 3000,
+      "value": 0.848247230052948
+    },
+    "train/accuracy@3": {
+      "step": 3000,
+      "value": 0.851127028465271
+    },
+    "train/accuracy@4": {
+      "step": 3000,
+      "value": 0.8497721552848816
+    },
+    "train/accuracy@5": {
+      "step": 3000,
+      "value": 0.8434146046638489
+    },
+    "train/accuracy@6": {
+      "step": 3000,
+      "value": 0.8280242085456848
+    },
+    "train/grad_norm": {
+      "step": 3000,
+      "value": 0.078125
+    },
+    "train/loss": {
+      "step": 3000,
+      "value": 2.1320221424102783
+    },
+    "train/lr": {
+      "step": 3000,
+      "value": 0.0
+    },
+    "train/ploss_0": {
+      "step": 3000,
+      "value": 0.5350198745727539
+    },
+    "train/ploss_1": {
+      "step": 3000,
+      "value": 0.535610020160675
+    },
+    "train/ploss_2": {
+      "step": 3000,
+      "value": 0.5331065654754639
+    },
+    "train/ploss_3": {
+      "step": 3000,
+      "value": 0.5346406698226929
+    },
+    "train/ploss_4": {
+      "step": 3000,
+      "value": 0.540634036064148
+    },
+    "train/ploss_5": {
+      "step": 3000,
+      "value": 0.552795946598053
+    },
+    "train/ploss_6": {
+      "step": 3000,
+      "value": 0.5760428309440613
+    },
+    "train/tau_greedy": {
+      "step": 3000,
+      "value": 5.192190647125244
+    },
+    "train/tau_probabilistic": {
+      "step": 3000,
+      "value": 4.4316630363464355
+    },
+    "train/valid_tokens@0": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@1": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@2": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@3": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@4": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@5": {
+      "step": 3000,
+      "value": 8655.0615234375
+    },
+    "train/valid_tokens@6": {
+      "step": 3000,
+      "value": 8655.0615234375
+    }
+  }
+}

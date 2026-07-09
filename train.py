@@ -1,6 +1,9 @@
 import argparse
 import json
 import os
+
+os.environ["USE_HUB_KERNELS"] = "0"
+
 import torch
 from deepspec.utils import (
     CustomJSONEncoder,

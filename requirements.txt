@@ -2,6 +2,8 @@
 # is not appropriate for your environment.
 torch==2.9.1
 transformers==5.10.2
+accelerate==1.14.0
+kernels==0.14.1
 numpy==2.4.4
 PyYAML==6.0.3
 tqdm==4.67.3

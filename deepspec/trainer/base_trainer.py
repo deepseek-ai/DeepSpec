@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 import math
 import os
+import shutil
 
 import torch
 import torch.distributed as dist
@@ -166,7 +167,8 @@ class BaseTrainer:
         self.suspend_controller = SuspendController(device=self.device)
         self.next_micro_step = 0
 
-        if is_global_main_process(): ensure_dir(self.checkpoint_dir_root)
+        if is_global_main_process():
+            ensure_dir(self.checkpoint_dir_root)
         training_logger.init(
             logging_steps=int(self.args.logging.logging_steps),
             tensorboard_dir=self.args.logging.tensorboard_dir,
@@ -181,6 +183,28 @@ class BaseTrainer:
                 precision_dtype=self.precision_dtype,
                 global_rank=self.global_rank,
             )
+        else:
+            init_draft_model_name_or_path = getattr(
+                self.args.model,
+                "init_draft_model_name_or_path",
+                None,
+            )
+            if init_draft_model_name_or_path is not None:
+                print_on_local_main(
+                    f"Initializing draft model from {init_draft_model_name_or_path}."
+                )
+                self.draft_model = type(self.draft_model).from_pretrained(
+                    str(init_draft_model_name_or_path),
+                    dtype=self.precision_dtype,
+                    attn_implementation=str(
+                        self.draft_model.config._attn_implementation
+                    ),
+                )
+                self.draft_model = self.draft_model.to(
+                    device=self.device,
+                    dtype=self.precision_dtype,
+                )
+                self.draft_model.set_embedding_head_trainable(False)
         self.model = self.draft_model
         if self.args.train.torch_compile:
             print_on_local_main("Compiling training model with torch.compile...")
@@ -301,16 +325,22 @@ class BaseTrainer:
             start_global_offset_samples=start_offset_samples,
             num_samples=num_samples,
         )
+        num_workers = int(self.args.data.num_workers)
+        worker_kwargs = {}
+        if num_workers > 0:
+            worker_kwargs = {
+                "persistent_workers": True,
+                "prefetch_factor": 4,
+            }
         return DataLoader(
             self.train_dataset,
             batch_size=int(self.args.train.local_batch_size),
             sampler=sampler,
             collate_fn=self.data_collator_cls(),
-            num_workers=int(self.args.data.num_workers),
+            num_workers=num_workers,
             pin_memory=True,
             drop_last=True,
-            persistent_workers=True,
-            prefetch_factor=4,
+            **worker_kwargs,
         )
 
     def run_batch(self, batch):
@@ -330,8 +360,46 @@ class BaseTrainer:
             local_batch_size=int(self.args.train.local_batch_size),
         )
 
-    def save_and_eval_checkpoint(self):
+    def save_train_checkpoint(self):
         checkpoint_dir = save_checkpoint(**self._checkpoint_kwargs())
+        self._prune_checkpoints()
+        dist.barrier()
+        return checkpoint_dir
+
+    def _prune_checkpoints(self):
+        keep_last_checkpoints = int(
+            getattr(self.args.logging, "keep_last_checkpoints", 0) or 0
+        )
+        if keep_last_checkpoints <= 0:
+            return
+        if not is_global_main_process():
+            return
+
+        checkpoints = []
+        for name in os.listdir(self.checkpoint_dir_root):
+            if not name.startswith("step_"):
+                continue
+            checkpoint_path = os.path.join(self.checkpoint_dir_root, name)
+            if not os.path.isdir(checkpoint_path) or os.path.islink(checkpoint_path):
+                continue
+            try:
+                step = int(name.removeprefix("step_"))
+            except ValueError:
+                continue
+            checkpoints.append((step, checkpoint_path))
+
+        checkpoints.sort()
+        latest_checkpoint_path = os.path.realpath(
+            os.path.join(self.checkpoint_dir_root, "step_latest")
+        )
+        for _, checkpoint_path in checkpoints[:-keep_last_checkpoints]:
+            if os.path.realpath(checkpoint_path) == latest_checkpoint_path:
+                continue
+            shutil.rmtree(checkpoint_path)
+            print_on_global_main(f"Pruned old checkpoint {checkpoint_path}")
+
+    def save_and_eval_checkpoint(self):
+        checkpoint_dir = self.save_train_checkpoint()
         if is_global_main_process():
             _launch_eval(
                 target_model_name_or_path=self.args.model.target_model_name_or_path,
@@ -345,8 +413,7 @@ class BaseTrainer:
 
     def _save_and_suspend(self):
         print_on_global_main("Saving checkpoint before suspending...")
-        save_checkpoint(**self._checkpoint_kwargs())
-        dist.barrier()
+        self.save_train_checkpoint()
         if is_global_main_process():
             print_on_global_main("Going to suspend...")
             self.suspend_controller.go_suspend()
@@ -397,8 +464,20 @@ class BaseTrainer:
                     grad_norm=grad_norm.item(),
                 )
 
-                if self.global_step % int(self.args.logging.checkpointing_steps) == 0:
+                should_eval_checkpoint = (
+                    self.global_step % int(self.args.logging.checkpointing_steps) == 0
+                )
+                save_only_checkpointing_steps = int(
+                    getattr(self.args.logging, "save_only_checkpointing_steps", 0) or 0
+                )
+                should_save_only_checkpoint = (
+                    save_only_checkpointing_steps > 0
+                    and self.global_step % save_only_checkpointing_steps == 0
+                )
+                if should_eval_checkpoint:
                     self.save_and_eval_checkpoint()
+                elif should_save_only_checkpoint:
+                    self.save_train_checkpoint()
 
                 if self.suspend_controller.requested():
                     self._save_and_suspend()

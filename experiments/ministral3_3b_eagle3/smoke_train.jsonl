@@ -1,0 +1,4 @@
+{"conversations": [{"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "4"}]}
+{"conversations": [{"role": "user", "content": "Name the capital of France."}, {"role": "assistant", "content": "Paris"}]}
+{"conversations": [{"role": "user", "content": "Write a Python function that returns x squared."}, {"role": "assistant", "content": "def square(x):\n    return x * x"}]}
+{"conversations": [{"role": "user", "content": "Give one short reason water freezes."}, {"role": "assistant", "content": "Water freezes when it loses enough heat for molecules to form solid ice."}]}
