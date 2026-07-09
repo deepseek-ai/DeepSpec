@@ -14,7 +14,7 @@ def _all_reduce_loss_denominators(
     world_size: int,
 ) -> dict[str, torch.Tensor]:
     denominators = {}
-    for key in ("ce_loss_den", "l1_loss_den", "confidence_loss_den"):
+    for key in ("ce_loss_den", "l1_loss_den", "confidence_loss_den", "accept_loss_den"):
         tensor = loss_terms[key].detach().clone()
         if world_size > 1:
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
@@ -92,6 +92,7 @@ def _collect_local_terms(
     outputs: DSparkForwardOutput,
     loss_decay_gamma: Optional[float],
     l1_loss_alpha: float,
+    accept_loss_alpha: float,
 ) -> tuple[dict[str, torch.Tensor], bool]:
     draft_logits = outputs.draft_logits
     target_ids = outputs.target_ids
@@ -143,6 +144,21 @@ def _collect_local_terms(
             valid_block_weights=valid_block_weights,
         )
 
+    accept_loss_num = zero
+    accept_loss_den = zero
+    if accept_loss_alpha > 0:
+        assert accept_rate_3d is not None, (
+            "aligned_target_logits is required when accept_loss_alpha > 0."
+        )
+        # Trainable form of the ``tau_probabilistic`` metric: maximise the
+        # expected accepted draft length E[accepted] = sum_k prod_{j<=k} alpha_j,
+        # with alpha the per-position acceptance probability. Negated so that
+        # minimising the loss maximises accepted length.
+        valid_accept_rate = accept_rate_3d * eval_mask.to(torch.float32)
+        expected_draft_accepted = valid_accept_rate.cumprod(dim=-1).sum(dim=-1)
+        accept_loss_num = -(expected_draft_accepted * valid_block_weights).sum()
+        accept_loss_den = valid_block_weights.sum()
+
     has_confidence = outputs.confidence_pred is not None
     confidence_loss_num = zero
     confidence_loss_den = zero
@@ -187,6 +203,8 @@ def _collect_local_terms(
         "l1_loss_den": l1_loss_den,
         "confidence_loss_num": confidence_loss_num,
         "confidence_loss_den": confidence_loss_den,
+        "accept_loss_num": accept_loss_num,
+        "accept_loss_den": accept_loss_den,
     }
 
     for pos_idx in range(block_size):
@@ -231,6 +249,7 @@ def _build_loss(
     ce_loss_alpha: float,
     l1_loss_alpha: float,
     confidence_head_alpha: float,
+    accept_loss_alpha: float,
     has_confidence: bool,
     world_size: int,
 ) -> torch.Tensor:
@@ -245,10 +264,16 @@ def _build_loss(
         confidence_loss = loss_terms["confidence_loss_num"] / (
             global_denominators["confidence_loss_den"] + 1e-6
         )
+    accept_loss = ce_loss.new_zeros(())
+    if global_denominators["accept_loss_den"].item() > 0:
+        accept_loss = loss_terms["accept_loss_num"] / (
+            global_denominators["accept_loss_den"] + 1e-6
+        )
     return (
         ce_loss_alpha * ce_loss
         + l1_loss_alpha * l1_loss
         + confidence_head_alpha * confidence_loss
+        + accept_loss_alpha * accept_loss
     ) * world_size
 
 
@@ -259,11 +284,13 @@ def compute_dspark_loss(
     ce_loss_alpha: float,
     l1_loss_alpha: float,
     confidence_head_alpha: float,
+    accept_loss_alpha: float = 0.0,
 ):
     loss_terms, has_confidence = _collect_local_terms(
         outputs=outputs,
         loss_decay_gamma=loss_decay_gamma,
         l1_loss_alpha=float(l1_loss_alpha),
+        accept_loss_alpha=float(accept_loss_alpha),
     )
     world_size = dist.get_world_size()
     global_denominators = _all_reduce_loss_denominators(
@@ -273,6 +300,7 @@ def compute_dspark_loss(
     ce_loss_alpha = float(ce_loss_alpha)
     l1_loss_alpha = float(l1_loss_alpha)
     confidence_head_alpha = float(confidence_head_alpha)
+    accept_loss_alpha = float(accept_loss_alpha)
 
     local_ce_loss = loss_terms["ce_loss_num"] / (loss_terms["ce_loss_den"] + 1e-6)
     local_l1_loss = local_ce_loss.new_zeros(())
@@ -285,10 +313,16 @@ def compute_dspark_loss(
         local_confidence_loss = loss_terms["confidence_loss_num"] / (
             loss_terms["confidence_loss_den"] + 1e-6
         )
+    local_accept_loss = local_ce_loss.new_zeros(())
+    if loss_terms["accept_loss_den"].item() > 0:
+        local_accept_loss = loss_terms["accept_loss_num"] / (
+            loss_terms["accept_loss_den"] + 1e-6
+        )
     local_loss = (
         ce_loss_alpha * local_ce_loss
         + l1_loss_alpha * local_l1_loss
         + confidence_head_alpha * local_confidence_loss
+        + accept_loss_alpha * local_accept_loss
     )
 
     add_metric(
@@ -311,6 +345,13 @@ def compute_dspark_loss(
             den=loss_terms["confidence_loss_den"],
             tag="train",
         )
+    if loss_terms["accept_loss_den"].item() > 0:
+        add_metric(
+            "accept_loss",
+            loss_terms["accept_loss_num"],
+            den=loss_terms["accept_loss_den"],
+            tag="train",
+        )
     add_metric(
         "loss",
         local_loss,
@@ -323,6 +364,7 @@ def compute_dspark_loss(
         ce_loss_alpha=ce_loss_alpha,
         l1_loss_alpha=l1_loss_alpha,
         confidence_head_alpha=confidence_head_alpha,
+        accept_loss_alpha=accept_loss_alpha,
         has_confidence=has_confidence,
         world_size=world_size,
     )

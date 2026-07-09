@@ -38,6 +38,8 @@ bash scripts/train/train.sh
 
 Hardware: the default configs and scripts assume a single node with 8 GPUs. For fewer GPUs, reduce `CUDA_VISIBLE_DEVICES`.
 
+**Direct-acceptance (LK) loss (optional).** Set `accept_loss_alpha > 0` in a DFlash/DSpark config's `model` block to add a differentiable objective that maximises the drafter's expected accepted length E[tau] = sum_k prod_{j<=k} alpha_j directly, rather than relying only on the per-token cross-entropy proxy. It makes the acceptance quantity the trainer already logs as `tau_probabilistic` trainable; `0.0` (default) keeps prior behaviour.
+
 
 ## Evaluation
 

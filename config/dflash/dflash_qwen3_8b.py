@@ -25,6 +25,11 @@ model = dict(
     loss_decay_gamma=4.0,
     ce_loss_alpha=1.0,
     l1_loss_alpha=0.0,
+
+    # Optional direct-acceptance (LK) loss. >0 trains the drafter to maximise
+    # expected accepted length E[tau]=sum_k prod_{j<=k} alpha_j directly,
+    # rather than only the per-token cross-entropy proxy. 0.0 keeps prior behaviour.
+    accept_loss_alpha=0.0,
 )
 
 train = dict(
