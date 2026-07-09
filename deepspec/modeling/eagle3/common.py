@@ -162,6 +162,10 @@ def prepare_4d_causal_attention_mask(
     )
     causal = causal.view(1, 1, q_len, kv_len)
 
+    mask_len = int(attention_mask.shape[-1])
+    if mask_len < kv_len:
+        repeat_count = (kv_len + mask_len - 1) // mask_len
+        attention_mask = attention_mask.repeat(1, repeat_count)
     expanded_mask = attention_mask[:, None, None, :kv_len].to(device=device).bool()
     padding = torch.where(
         expanded_mask,
