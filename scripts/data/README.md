@@ -24,6 +24,58 @@ train_datasets/qwen3_4b/perfectblend_train_regen.jsonl
 
 The example scripts assume a single machine with eight visible GPUs by default. For fewer GPUs, edit `num_workers` and `CUDA_VISIBLE_DEVICES` in the shell scripts.
 
+## Lightweight Smoke Test And Cache Sizing
+
+Before preparing a full target cache, run the sizing helper to estimate disk
+usage for your dataset and model shape. The helper reads `max_length` and
+`target_layer_ids` from a DeepSpec config, while keeping `hidden_size` explicit
+so it does not need to download target-model metadata:
+
+```bash
+python scripts/data/estimate_target_cache_size.py \
+    --config config/dspark/dspark_qwen3_4b.py \
+    --num-samples 1000 \
+    --hidden-size 2560
+```
+
+For a quick end-to-end smoke test, first create a small JSONL subset and use a
+separate cache directory:
+
+```bash
+python - <<'PY'
+from itertools import islice
+from pathlib import Path
+
+source = Path("train_datasets/qwen3_4b/perfectblend_train_regen.jsonl")
+target = Path("train_datasets/qwen3_4b/perfectblend_train_regen_smoke.jsonl")
+target.parent.mkdir(parents=True, exist_ok=True)
+with source.open("r", encoding="utf-8") as src, target.open("w", encoding="utf-8") as dst:
+    for line in islice(src, 32):
+        dst.write(line)
+PY
+
+python scripts/data/estimate_target_cache_size.py \
+    --config config/dspark/dspark_qwen3_4b.py \
+    --num-samples 32 \
+    --hidden-size 2560
+```
+
+Then run target-cache preparation against that subset with a small local batch
+size and a fresh output directory:
+
+```bash
+python scripts/data/prepare_target_cache.py \
+    --config config/dspark/dspark_qwen3_4b.py \
+    --train-data-path train_datasets/qwen3_4b/perfectblend_train_regen_smoke.jsonl \
+    --output-dir ${HOME}/.cache/deepspec/qwen3_4b_target_cache_smoke \
+    --local-batch-size 1 \
+    --num-workers 0
+```
+
+The smoke cache is intended to validate paths, tokenizer/model loading,
+distributed setup, and cache serialization before committing large GPU time or
+disk space to the full data run.
+
 ## Step 1: Download And Split Data
 
 The source dataset is `mlabonne/open-perfectblend`. The train split is written as JSONL, and the held-out user turns are written under `eval_datasets/`.

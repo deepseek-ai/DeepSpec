@@ -28,6 +28,10 @@ See [scripts/data/README.md](./scripts/data/README.md) for the step-by-step data
 2. regenerate answers,
 3. prepare the target cache (storage warning: this can be very large — roughly 38 TB for the default `Qwen/Qwen3-4B` setting).
 
+Use `scripts/data/estimate_target_cache_size.py` and the smoke-test commands in
+the data README to validate a small target-cache run before preparing the full
+dataset.
+
 ## Training
 
 ```bash
