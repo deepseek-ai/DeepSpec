@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -149,29 +151,42 @@ def user_turns(row: dict) -> list[str]:
     ]
 
 
-def write_train_jsonl(dataset, output_path: Path) -> int:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def write_train_jsonl(dataset, handle) -> int:
     count = 0
-    with output_path.open("w", encoding="utf-8") as handle:
-        for row_number, row in enumerate(dataset, start=1):
-            converted = normalize_conversations(row)
-            validate_conversations(converted, row_number)
-            handle.write(json.dumps(converted, ensure_ascii=False) + "\n")
-            count += 1
+    for row_number, row in enumerate(dataset, start=1):
+        converted = normalize_conversations(row)
+        validate_conversations(converted, row_number)
+        handle.write(json.dumps(converted, ensure_ascii=False) + "\n")
+        count += 1
+    handle.flush()
+    os.fsync(handle.fileno())
     return count
 
 
-def write_eval_jsonl(dataset, output_path: Path) -> int:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def write_eval_jsonl(dataset, handle) -> int:
     count = 0
-    with output_path.open("w", encoding="utf-8") as handle:
-        for row_number, row in enumerate(dataset, start=1):
-            converted = normalize_conversations(row)
-            validate_conversations(converted, row_number)
-            turns = user_turns(converted)
-            handle.write(json.dumps({"turns": turns}, ensure_ascii=False) + "\n")
-            count += 1
+    for row_number, row in enumerate(dataset, start=1):
+        converted = normalize_conversations(row)
+        validate_conversations(converted, row_number)
+        turns = user_turns(converted)
+        handle.write(json.dumps({"turns": turns}, ensure_ascii=False) + "\n")
+        count += 1
+    handle.flush()
+    os.fsync(handle.fileno())
     return count
+
+
+def create_temporary_output(output_path: Path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(
+        dir=output_path.parent,
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+    )
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    os.fchmod(fd, 0o666 & ~current_umask)
+    return Path(temporary_path), os.fdopen(fd, "w", encoding="utf-8")
 
 
 def main() -> None:
@@ -186,9 +201,31 @@ def main() -> None:
     dataset = load_source_dataset(args)
     split_dataset = dataset.train_test_split(test_size=args.test_size, seed=args.seed)
 
-    train_count = write_train_jsonl(split_dataset["train"], args.train_output_path)
     eval_output_path = test_output_path(args)
-    test_count = write_eval_jsonl(split_dataset["test"], eval_output_path)
+    train_temporary_path = None
+    eval_temporary_path = None
+    train_handle = None
+    eval_handle = None
+    try:
+        train_temporary_path, train_handle = create_temporary_output(
+            args.train_output_path
+        )
+        eval_temporary_path, eval_handle = create_temporary_output(eval_output_path)
+        with train_handle:
+            train_count = write_train_jsonl(split_dataset["train"], train_handle)
+        with eval_handle:
+            test_count = write_eval_jsonl(split_dataset["test"], eval_handle)
+        os.replace(train_temporary_path, args.train_output_path)
+        train_temporary_path = None
+        os.replace(eval_temporary_path, eval_output_path)
+        eval_temporary_path = None
+    finally:
+        for handle in (train_handle, eval_handle):
+            if handle is not None and not handle.closed:
+                handle.close()
+        for temporary_path in (train_temporary_path, eval_temporary_path):
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     print(f"wrote train split: {train_count} rows -> {args.train_output_path}")
     print(f"wrote eval split: {test_count} rows -> {eval_output_path}")
