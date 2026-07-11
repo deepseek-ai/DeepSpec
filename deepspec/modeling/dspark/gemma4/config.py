@@ -7,8 +7,12 @@ TRAIN_ATTN_IMPLEMENTATION = "flex_attention"
 
 
 def get_gemma4_text_config(target_config):
+    if target_config.model_type in ("gemma4_text", "gemma4_unified_text"):
+        return copy.deepcopy(target_config)
+
     assert target_config.model_type in ("gemma4", "gemma4_unified"), (
-        "Gemma4 DSpark expects a Gemma4 or Gemma4 Unified top-level target config, "
+        "Gemma4 DSpark expects a Gemma4/Gemma4 Unified top-level target config "
+        "or a Gemma4/Gemma4 Unified text config, "
         f"got model_type={target_config.model_type!r}."
     )
     text_config = target_config.text_config

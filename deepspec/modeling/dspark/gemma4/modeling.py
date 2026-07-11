@@ -11,8 +11,10 @@ from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
 from transformers.models.gemma4.modeling_gemma4 import (
     Gemma4PreTrainedModel,
     Gemma4RMSNorm,
+    Gemma4TextExperts,
     Gemma4TextMLP,
     Gemma4TextRotaryEmbedding,
+    Gemma4TextRouter,
     Gemma4TextScaledWordEmbedding,
     apply_rotary_pos_emb as apply_gemma4_rotary_pos_emb,
 )
@@ -172,14 +174,27 @@ class Gemma4DSparkDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        assert not bool(config.enable_moe_block), (
-            "Gemma4 DSpark prototype does not support Gemma4 MoE blocks yet."
-        )
+        self.enable_moe_block = bool(config.enable_moe_block)
         assert int(config.hidden_size_per_layer_input) == 0, (
             "Gemma4 DSpark prototype does not support per-layer input gates yet."
         )
         self.self_attn = Gemma4DSparkAttention(config=config, layer_idx=layer_idx)
         self.mlp = Gemma4TextMLP(config, layer_idx)
+        if self.enable_moe_block:
+            self.router = Gemma4TextRouter(config)
+            self.experts = Gemma4TextExperts(config)
+            self.post_feedforward_layernorm_1 = Gemma4RMSNorm(
+                config.hidden_size,
+                eps=config.rms_norm_eps,
+            )
+            self.post_feedforward_layernorm_2 = Gemma4RMSNorm(
+                config.hidden_size,
+                eps=config.rms_norm_eps,
+            )
+            self.pre_feedforward_layernorm_2 = Gemma4RMSNorm(
+                config.hidden_size,
+                eps=config.rms_norm_eps,
+            )
         self.input_layernorm = Gemma4RMSNorm(
             config.hidden_size,
             eps=config.rms_norm_eps,
@@ -233,6 +248,15 @@ class Gemma4DSparkDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        if self.enable_moe_block:
+            hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states)
+            hidden_states_flat = residual.reshape(-1, residual.shape[-1])
+            _, top_k_weights, top_k_index = self.router(hidden_states_flat)
+            hidden_states_2 = self.pre_feedforward_layernorm_2(hidden_states_flat)
+            hidden_states_2 = self.experts(hidden_states_2, top_k_index, top_k_weights)
+            hidden_states_2 = hidden_states_2.reshape(residual.shape)
+            hidden_states_2 = self.post_feedforward_layernorm_2(hidden_states_2)
+            hidden_states = hidden_states_1 + hidden_states_2
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states * self.layer_scalar
