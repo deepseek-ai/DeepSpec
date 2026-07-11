@@ -358,6 +358,7 @@ class BaseTrainer:
             return
 
         local_batch_size = int(self.args.train.local_batch_size)
+        checkpointing_steps = int(self.args.logging.checkpointing_steps)
         total_micro_steps = self.max_train_steps * self.gradient_accumulation_steps
         remaining_micro_steps = total_micro_steps - self.next_micro_step
         remaining_samples = remaining_micro_steps * local_batch_size
@@ -397,14 +398,15 @@ class BaseTrainer:
                     grad_norm=grad_norm.item(),
                 )
 
-                if self.global_step % int(self.args.logging.checkpointing_steps) == 0:
+                if self.global_step % checkpointing_steps == 0:
                     self.save_and_eval_checkpoint()
 
                 if self.suspend_controller.requested():
                     self._save_and_suspend()
                     return
 
-        self.save_and_eval_checkpoint()
+        if self.global_step % checkpointing_steps != 0:
+            self.save_and_eval_checkpoint()
 
     def clean_up(self):
         training_logger.close()
