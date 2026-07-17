@@ -1,5 +1,5 @@
 try:
     import hfai
     from .internal import *
-except:
+except (ImportError, ModuleNotFoundError):
     from .public import *
