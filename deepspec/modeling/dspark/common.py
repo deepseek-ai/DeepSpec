@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -54,6 +55,54 @@ def extract_context_feature(hidden_states, layer_ids):
         [hidden_states[0 if layer_id == -1 else layer_id + 1] for layer_id in layer_ids],
         dim=-1,
     )
+
+
+def declared_partial_rotary_factor(config) -> float:
+    for source in (
+        getattr(config, "rope_parameters", None),
+        getattr(config, "rope_scaling", None),
+    ):
+        if isinstance(source, dict) and source.get("partial_rotary_factor") is not None:
+            return float(source["partial_rotary_factor"])
+    value = getattr(config, "partial_rotary_factor", None)
+    return 1.0 if value is None else float(value)
+
+
+def check_partial_rotary_factor(config, normalize: bool = False):
+    """DSpark draft attention applies RoPE across the full head dim, so a config
+    declaring partial_rotary_factor != 1.0 (e.g. inherited from a Qwen3.5-style
+    target via copy.deepcopy, or from a DFlash warm-start checkpoint) is not what
+    training actually does. Serving engines that honor the field (e.g. vLLM's
+    dflash/dspark path) would then rotate fewer dims than training did, silently
+    collapsing the acceptance length. Warn, and optionally normalize the
+    declaration to 1.0 so saved checkpoints describe the trained geometry."""
+    declared = declared_partial_rotary_factor(config)
+    if declared == 1.0:
+        return config
+    if normalize:
+        for source in (
+            getattr(config, "rope_parameters", None),
+            getattr(config, "rope_scaling", None),
+        ):
+            if isinstance(source, dict) and "partial_rotary_factor" in source:
+                source["partial_rotary_factor"] = 1.0
+        if getattr(config, "partial_rotary_factor", None) is not None:
+            config.partial_rotary_factor = 1.0
+        warnings.warn(
+            f"Draft config declared partial_rotary_factor={declared}, but DSpark "
+            "modeling applies RoPE across the full head dim; normalized the "
+            "declaration to 1.0 so the saved checkpoint matches the trained "
+            "geometry."
+        )
+    else:
+        warnings.warn(
+            f"Config declares partial_rotary_factor={declared}, but DSpark "
+            "modeling applies RoPE across the full head dim and ignores it. "
+            "Serving engines that honor this field (e.g. vLLM) will apply "
+            "different attention geometry than training; set it to 1.0 in the "
+            "checkpoint config before deploying."
+        )
+    return config
 
 
 def validate_target_layer_ids(layer_ids, num_target_layers: int):

@@ -1,6 +1,9 @@
 import copy
 
-from deepspec.modeling.dspark.common import validate_target_layer_ids
+from deepspec.modeling.dspark.common import (
+    check_partial_rotary_factor,
+    validate_target_layer_ids,
+)
 
 
 TRAIN_ATTN_IMPLEMENTATION = "flex_attention"
@@ -35,6 +38,10 @@ def build_draft_config(
         )
 
     draft_config = copy.deepcopy(target_config)
+    # The target config may declare partial RoPE (e.g. Qwen3.5 targets), which
+    # the DSpark draft modeling does not implement; normalize the declaration so
+    # saved checkpoints describe the geometry that is actually trained.
+    check_partial_rotary_factor(draft_config, normalize=True)
     draft_config.architectures = ["Qwen3DSparkModel"]
     draft_config.num_target_layers = num_target_layers
     draft_config.num_hidden_layers = num_draft_layers
