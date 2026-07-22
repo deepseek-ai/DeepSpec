@@ -21,6 +21,7 @@ from deepspec.modeling.dspark.common import (
     AcceptRatePredictor,
     DSparkForwardOutput,
     build_eval_mask,
+    check_partial_rotary_factor,
     create_dspark_attention_mask,
     create_noise_embed,
     create_position_ids,
@@ -236,6 +237,10 @@ class Qwen3DSparkModel(Qwen3PreTrainedModel):
             ]
         )
         self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # Warn on checkpoints whose config declares partial RoPE: this modeling
+        # rotates the full head dim, so the declaration is untrue and breaks
+        # serving engines that honor it (e.g. vLLM's dflash/dspark path).
+        check_partial_rotary_factor(config)
         self.rotary_emb = Qwen3RotaryEmbedding(config)
         self.fc = nn.Linear(
             len(self.target_layer_ids) * config.hidden_size,
