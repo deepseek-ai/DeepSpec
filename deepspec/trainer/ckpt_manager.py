@@ -24,9 +24,18 @@ TRAIN_CONFIG_FILE_NAME = "train_config.py"
 
 def discover_latest_checkpoint(checkpoint_dir):
     latest_link = os.path.join(checkpoint_dir, "step_latest")
-    if not (os.path.islink(latest_link) or os.path.isdir(latest_link)):
-        return None
-    return os.path.realpath(latest_link)
+    if os.path.islink(latest_link):
+        resolved = os.path.realpath(latest_link)
+        if not os.path.isdir(resolved):
+            raise RuntimeError(
+                f"Dangling 'step_latest' symlink at {latest_link!r} resolves to "
+                f"missing target {resolved!r}. Remove the symlink to start a "
+                f"fresh run, or restore the checkpoint it referenced."
+            )
+        return resolved
+    if os.path.isdir(latest_link):
+        return os.path.realpath(latest_link)
+    return None
 
 
 def save_train_config(*, train_config, checkpoint_dir: str) -> str:
