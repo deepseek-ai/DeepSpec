@@ -29,6 +29,7 @@ class CUDAPrefetcher:
         self._done = False
         self._gpu_batch = None
         self._thread = None
+        self._background_error = None
         # First batch: fetch synchronously so __next__ has something to return.
         self._fetch_and_transfer()
         return self
@@ -43,11 +44,23 @@ class CUDAPrefetcher:
         with torch.cuda.stream(self.stream):
             self._gpu_batch = move_batch_to_device(cpu_batch, self.device)
 
+    def _prefetch(self):
+        try:
+            self._fetch_and_transfer()
+        except BaseException as exc:
+            self._background_error = exc
+
     def __next__(self):
         # Join the background thread kicked off in the previous __next__.
         if self._thread is not None:
             self._thread.join()
             self._thread = None
+
+        if self._background_error is not None:
+            error = self._background_error
+            self._background_error = None
+            self._gpu_batch = None
+            raise error
 
         if self._done:
             raise StopIteration
@@ -64,7 +77,7 @@ class CUDAPrefetcher:
 
         # Kick off the next fetch and H2D in a background thread so it
         # overlaps with compute on the batch we are about to return.
-        self._thread = Thread(target=self._fetch_and_transfer, daemon=True)
+        self._thread = Thread(target=self._prefetch, daemon=True)
         self._thread.start()
 
         return batch
