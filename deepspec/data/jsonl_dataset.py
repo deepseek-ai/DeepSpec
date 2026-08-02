@@ -101,21 +101,22 @@ class JsonLineDataset(torch.utils.data.Dataset):
                     self.num_data_per_file.append(len(starts))
                     continue
 
-            handle = open(path, "rb")
-            mm = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
-            self.files[idx] = handle
-            self.mmaps[idx] = mm
             starts = []
-            mm.seek(0)
-            pos = 0
-            while True:
-                starts.append(pos)
-                line = mm.readline()
-                if not line:
-                    break
-                pos = mm.tell()
-            if starts and mm.size() == pos:
-                starts.pop()
+            if os.path.getsize(path) > 0:
+                handle = open(path, "rb")
+                mm = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+                self.files[idx] = handle
+                self.mmaps[idx] = mm
+                mm.seek(0)
+                pos = 0
+                while True:
+                    starts.append(pos)
+                    line = mm.readline()
+                    if not line:
+                        break
+                    pos = mm.tell()
+                if starts and mm.size() == pos:
+                    starts.pop()
             self.line_starts_per_file[idx] = starts
             self.num_data_per_file.append(len(starts))
             if cache_path is not None:
