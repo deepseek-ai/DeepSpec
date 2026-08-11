@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch keeps CI fast; the unit-tested modules need no CUDA/triton.
+          pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy PyYAML tqdm pytest
+
+      - name: Run tests
+        run: python -m pytest tests -v
