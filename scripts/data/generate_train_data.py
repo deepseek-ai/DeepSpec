@@ -44,6 +44,8 @@ def validate_args(args):
         raise ValueError("top-k must be greater than 0")
     if args.min_p is not None and not 0.0 <= args.min_p <= 1.0:
         raise ValueError("min-p must be between 0.0 and 1.0")
+    if args.repetition_penalty is not None and args.repetition_penalty <= 0:
+        raise ValueError("repetition-penalty must be greater than 0")
     if args.max_tokens <= 0:
         raise ValueError("max-tokens must be greater than 0")
     if args.concurrency <= 0:
@@ -77,14 +79,14 @@ def build_query_kwargs(args, messages, max_tokens=None):
     }
     if args.top_p is not None:
         query_kwargs["top_p"] = args.top_p
-    if args.repetition_penalty is not None:
-        query_kwargs["presence_penalty"] = args.repetition_penalty
 
     extra_body = {}
     if args.top_k is not None:
         extra_body["top_k"] = args.top_k
     if args.min_p is not None:
         extra_body["min_p"] = args.min_p
+    if args.repetition_penalty is not None:
+        extra_body["repetition_penalty"] = args.repetition_penalty
     if args.enable_thinking:
         extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = True
     if args.disable_thinking:
