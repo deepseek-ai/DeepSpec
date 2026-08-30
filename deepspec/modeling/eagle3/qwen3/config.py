@@ -33,6 +33,9 @@ def build_draft_config(*, target_config, model_args):
     draft_config.target_layer_ids = target_layer_ids
     draft_config.ttt_length = ttt_length
     draft_config.step_loss_decay = step_loss_decay
+    draft_config.trim_loss_positions = bool(
+        getattr(model_args, "trim_loss_positions", False)
+    )
     draft_config.draft_num_hidden_layers = draft_num_hidden_layers
     draft_config.tie_word_embeddings = False
     draft_config._attn_implementation = TRAIN_ATTN_IMPLEMENTATION

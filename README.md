@@ -38,6 +38,23 @@ bash scripts/train/train.sh
 
 Hardware: the default configs and scripts assume a single node with 8 GPUs. For fewer GPUs, reduce `CUDA_VISIBLE_DEVICES`.
 
+### Compact Eagle3 loss positions
+
+Eagle3 can optionally compact supervised positions before the draft norm / LM
+head and before teacher-probability conversion:
+
+```bash
+python train.py --config config/eagle3/eagle3_qwen3_8b.py \
+  --opts model.trim_loss_positions=true \
+  --opts data.target_cache_path=/path/to/target_cache
+```
+
+This option is disabled by default. It preserves the original full-length
+teacher LM-head projection and every full-length TTT backbone step, including
+Q/K/V projection, attention, cache updates, output projection, and MLP. Only
+the vocabulary-side metric and loss path is compacted, and the loss keeps the
+original `local_mean` denominator (`batch_size * sequence_length`).
+
 
 ## Evaluation
 

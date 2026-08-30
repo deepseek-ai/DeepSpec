@@ -12,12 +12,42 @@ materialising the [B, T, V] fp32 log-probs tensor that the naive
 PyTorch path retains across TTT steps.
 """
 
+from dataclasses import dataclass
+
 import torch
 import triton
 import triton.language as tl
 from transformers import DynamicCache
 
 from deepspec.utils.metrics import add_metric
+
+
+@dataclass(frozen=True)
+class Eagle3CompactStep:
+    """Row mappings for one A-level-compacted TTT step.
+
+    ``draft_indices`` indexes the full ``[B, T, H]`` draft hidden states after
+    the backbone has run. ``teacher_table_indices`` indexes a table containing
+    teacher probabilities for unique supervised target rows. Empty steps carry
+    one zero-masked dummy row so every rank still executes the same modules.
+    """
+
+    draft_indices: torch.Tensor
+    teacher_indices: torch.Tensor
+    teacher_table_indices: torch.Tensor
+    position_mask: torch.Tensor
+    scatter_indices: torch.Tensor
+    num_valid_rows: int
+
+
+@dataclass(frozen=True)
+class Eagle3CompactPlan:
+    """A-level row plan that leaves teacher projection and backbone full-length."""
+
+    teacher_unique_indices: torch.Tensor
+    steps: tuple[Eagle3CompactStep, ...]
+    batch_size: int
+    seq_len: int
 
 
 def _calculate_settings(n: int):
@@ -74,6 +104,103 @@ def _compute_loss_normalizers(
 
 
 @torch.no_grad()
+def _build_compact_plan(
+    *,
+    position_masks: list[torch.Tensor],
+) -> Eagle3CompactPlan:
+    """Build exact row mappings for A-level supervised-position compaction.
+
+    At TTT step ``j``, a live draft row ``r`` is supervised by target-model
+    logits at row ``r + j + 1``. The full path expresses this with a padded,
+    shifted target-probability tensor. This plan represents the same mapping
+    directly, without changing the full-length recurrent backbone.
+    """
+
+    assert position_masks, "position_masks must not be empty."
+    batch_size, seq_len = position_masks[0].shape[:2]
+    device = position_masks[0].device
+    raw_steps = []
+    all_teacher_indices = []
+
+    for step_idx, position_mask in enumerate(position_masks):
+        assert tuple(position_mask.shape[:2]) == (batch_size, seq_len)
+        flat_mask = position_mask.reshape(-1)
+        draft_indices = (flat_mask > 0).nonzero(as_tuple=False).squeeze(-1)
+        batch_indices = torch.div(draft_indices, seq_len, rounding_mode="floor")
+        row_indices = draft_indices.remainder(seq_len)
+        teacher_rows = row_indices + int(step_idx) + 1
+        # `_build_next_token_position_mask` clears every sequence's final valid
+        # row, and each later mask is shifted left once. Therefore every live
+        # row satisfies row + step_idx + 1 < seq_len. Keep this on-device;
+        # converting an `.all()` result to bool would synchronize every step.
+        teacher_indices = batch_indices * seq_len + teacher_rows
+        raw_steps.append((draft_indices, teacher_indices, flat_mask))
+        if teacher_indices.numel() > 0:
+            all_teacher_indices.append(teacher_indices)
+
+    if all_teacher_indices:
+        teacher_unique_indices = torch.unique(
+            torch.cat(all_teacher_indices), sorted=True
+        )
+    else:
+        # Keep the full teacher projection unchanged, and select one dummy row
+        # after it so empty-loss batches still have a valid compact tensor.
+        teacher_unique_indices = torch.zeros(1, dtype=torch.long, device=device)
+
+    steps = []
+    dummy_index = torch.zeros(1, dtype=torch.long, device=device)
+    for draft_indices, teacher_indices, flat_mask in raw_steps:
+        num_valid_rows = int(draft_indices.numel())
+        if num_valid_rows == 0:
+            padded_draft_indices = dummy_index
+            padded_teacher_indices = teacher_unique_indices[:1]
+            teacher_table_indices = dummy_index
+            compact_position_mask = flat_mask.new_zeros((1, 1, 1))
+        else:
+            padded_draft_indices = draft_indices
+            padded_teacher_indices = teacher_indices
+            teacher_table_indices = torch.searchsorted(
+                teacher_unique_indices, teacher_indices
+            )
+            compact_position_mask = flat_mask.index_select(
+                0, draft_indices
+            ).reshape(1, -1, 1)
+        steps.append(
+            Eagle3CompactStep(
+                draft_indices=padded_draft_indices,
+                teacher_indices=padded_teacher_indices,
+                teacher_table_indices=teacher_table_indices,
+                position_mask=compact_position_mask,
+                scatter_indices=draft_indices,
+                num_valid_rows=num_valid_rows,
+            )
+        )
+
+    return Eagle3CompactPlan(
+        teacher_unique_indices=teacher_unique_indices,
+        steps=tuple(steps),
+        batch_size=int(batch_size),
+        seq_len=int(seq_len),
+    )
+
+
+@torch.no_grad()
+def _build_compact_teacher_probs(
+    *,
+    target_logits: torch.Tensor,
+    compact_plan: Eagle3CompactPlan,
+) -> torch.Tensor:
+    """Convert only unique supervised teacher-logit rows to fp32 probabilities."""
+
+    vocab_size = int(target_logits.shape[-1])
+    target_logits_flat = target_logits.reshape(-1, vocab_size)
+    compact_logits = target_logits_flat.index_select(
+        0, compact_plan.teacher_unique_indices
+    )
+    return torch.softmax(compact_logits.float(), dim=-1).detach()
+
+
+@torch.no_grad()
 def _build_next_token_position_mask(
     *,
     loss_mask: torch.Tensor,
@@ -110,6 +237,8 @@ def _log_eagle3_step_metrics(
     draft_logits: torch.Tensor,
     target_probs: torch.Tensor,
     position_mask: torch.Tensor,
+    full_shape: tuple[int, int] | None = None,
+    scatter_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     valid_mask = position_mask.squeeze(-1) > 0
     correct_mask = (draft_logits.argmax(-1) == target_probs.argmax(-1)) & valid_mask
@@ -131,6 +260,24 @@ def _log_eagle3_step_metrics(
         reduction="dp_sum",
         tag="train",
     )
+    if scatter_indices is not None:
+        assert full_shape is not None
+        num_valid_rows = int(scatter_indices.numel())
+        full_numel = int(full_shape[0]) * int(full_shape[1])
+
+        def scatter(values: torch.Tensor) -> torch.Tensor:
+            output = values.new_zeros(full_numel)
+            if num_valid_rows > 0:
+                output.index_copy_(
+                    0,
+                    scatter_indices,
+                    values.reshape(-1)[:num_valid_rows],
+                )
+            return output.reshape(full_shape)
+
+        correct_mask = scatter(correct_mask)
+        accept_rate_mask = scatter(accept_rate_mask)
+        valid_mask = scatter(valid_mask)
     return correct_mask, accept_rate_mask, valid_mask
 
 
@@ -279,6 +426,71 @@ def _log_softmax_backward_kernel(
         tl.store(logits_ptr + offsets, grad_block.to(tl.float32), mask=mask)
 
 
+def _fused_log_softmax_forward(logits, target_p, position_mask, normalizer):
+    assert logits.is_cuda, "FusedLogSoftmaxLoss requires CUDA tensors."
+    assert logits.shape == target_p.shape
+    assert position_mask.shape[:2] == logits.shape[:2]
+    B, T, V = logits.shape
+    loss = torch.zeros((B * T, 1), device=logits.device, dtype=torch.float32)
+    logits_flat = logits.contiguous().view(B * T, V)
+    target_flat = target_p.contiguous().view(B * T, V)
+    position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
+    grid = (B * T,)
+    m = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
+    d = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
+    BLOCK_SIZE, num_warps = _calculate_settings(V)
+    _log_softmax_forward_kernel[grid](
+        logits_flat,
+        logits_flat.stride(0),
+        target_flat,
+        target_flat.stride(0),
+        position_mask_flat,
+        position_mask_flat.stride(0),
+        loss,
+        loss.stride(0),
+        m,
+        d,
+        V,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+    return loss.squeeze(1).sum() / float(normalizer), m, d
+
+
+def _fused_log_softmax_backward(
+    *,
+    logits,
+    target_p,
+    position_mask,
+    m,
+    d,
+    normalizer,
+    grad_output,
+):
+    B, T, V = logits.shape
+    scaling_factor = 1.0 / float(normalizer)
+    logits_flat = logits.contiguous().view(B * T, V)
+    target_flat = target_p.contiguous().view(B * T, V)
+    position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
+    grid = (B * T,)
+    BLOCK_SIZE, num_warps = _calculate_settings(V)
+    _log_softmax_backward_kernel[grid](
+        logits_flat,
+        logits_flat.stride(0),
+        target_flat,
+        target_flat.stride(0),
+        position_mask_flat,
+        grad_output,
+        scaling_factor,
+        m,
+        d,
+        V,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+    return logits_flat.view(B, T, V)
+
+
 class FusedLogSoftmaxLoss(torch.autograd.Function):
     """Soft cross-entropy with fused Triton forward/backward.
 
@@ -293,62 +505,88 @@ class FusedLogSoftmaxLoss(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, logits, target_p, position_mask, normalizer):
-        assert logits.is_cuda, "FusedLogSoftmaxLoss requires CUDA tensors."
-        assert logits.shape == target_p.shape
-        assert position_mask.shape[:2] == logits.shape[:2]
-        B, T, V = logits.shape
-        loss = torch.zeros((B * T, 1), device=logits.device, dtype=torch.float32)
-        logits_flat = logits.contiguous().view(B * T, V)
-        target_flat = target_p.contiguous().view(B * T, V)
-        position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
-        grid = (B * T,)
-        m = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
-        d = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
-        BLOCK_SIZE, num_warps = _calculate_settings(V)
-        _log_softmax_forward_kernel[grid](
-            logits_flat,
-            logits_flat.stride(0),
-            target_flat,
-            target_flat.stride(0),
-            position_mask_flat,
-            position_mask_flat.stride(0),
-            loss,
-            loss.stride(0),
-            m,
-            d,
-            V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
+        loss, m, d = _fused_log_softmax_forward(
+            logits,
+            target_p,
+            position_mask,
+            normalizer,
         )
         ctx.save_for_backward(logits.detach(), target_p, position_mask, m, d)
         ctx.normalizer = float(normalizer)
-        return loss.squeeze(1).sum() / ctx.normalizer
+        return loss
 
     @staticmethod
     def backward(ctx, grad_output):
         logits, target, position_mask, m, d = ctx.saved_tensors
-        B, T, V = logits.shape
-        scaling_factor = 1.0 / ctx.normalizer
-        logits_flat = logits.contiguous().view(B * T, V)
-        target_flat = target.contiguous().view(B * T, V)
-        position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
-        grid = (B * T,)
-        BLOCK_SIZE, num_warps = _calculate_settings(V)
-        _log_softmax_backward_kernel[grid](
-            logits_flat,
-            logits_flat.stride(0),
-            target_flat,
-            target_flat.stride(0),
-            position_mask_flat,
-            grad_output,
-            scaling_factor,
+        grad_logits = _fused_log_softmax_backward(
+            logits=logits,
+            target_p=target,
+            position_mask=position_mask,
+            m=m,
+            d=d,
+            normalizer=ctx.normalizer,
+            grad_output=grad_output,
+        )
+        return grad_logits, None, None, None
+
+
+class FusedIndexedLogSoftmaxLoss(torch.autograd.Function):
+    """Fused loss whose target rows are views of one shared compact table.
+
+    Forward and backward materialize only the current step's indexed rows. The
+    autograd context saves the shared table plus row indices, rather than one
+    ``[N_step, V]`` target copy for every TTT step.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        logits,
+        target_table,
+        target_indices,
+        position_mask,
+        normalizer,
+    ):
+        assert logits.shape[0] == 1
+        target_p = target_table.index_select(0, target_indices).unsqueeze(0)
+        loss, m, d = _fused_log_softmax_forward(
+            logits,
+            target_p,
+            position_mask,
+            normalizer,
+        )
+        ctx.save_for_backward(
+            logits.detach(),
+            target_table,
+            target_indices,
+            position_mask,
             m,
             d,
-            V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
         )
-        return logits_flat.view(B, T, V), None, None, None
+        ctx.normalizer = float(normalizer)
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (
+            logits,
+            target_table,
+            target_indices,
+            position_mask,
+            m,
+            d,
+        ) = ctx.saved_tensors
+        target_p = target_table.index_select(0, target_indices).unsqueeze(0)
+        grad_logits = _fused_log_softmax_backward(
+            logits=logits,
+            target_p=target_p,
+            position_mask=position_mask,
+            m=m,
+            d=d,
+            normalizer=ctx.normalizer,
+            grad_output=grad_output,
+        )
+        return grad_logits, None, None, None, None
 
 
 def compute_eagle3_loss(
@@ -357,6 +595,7 @@ def compute_eagle3_loss(
     batch: dict[str, torch.Tensor],
     ttt_length: int,
     step_loss_decay: float,
+    trim_loss_positions: bool = False,
 ) -> torch.Tensor:
     input_ids = batch["input_ids"].long()
     attention_mask = batch["attention_mask"].long()
@@ -373,18 +612,6 @@ def compute_eagle3_loss(
         loss_mask=batch["loss_mask"],
         attention_mask=attention_mask,
     )
-    past_key_values = DynamicCache()
-    total_loss = hidden_states.new_zeros((), dtype=torch.float32)
-    with torch.no_grad():
-        target_logits = model(
-            target_last_hidden_states=target_last_hidden_states,
-            target_logits_only=True,
-        )
-    target_probs = _build_padded_next_token_target_probs(
-        target_logits=target_logits,
-        ttt_length=int(ttt_length),
-    )
-    del target_logits
     position_masks = []
     for _ in range(int(ttt_length)):
         position_masks.append(shifted_position_mask)
@@ -395,18 +622,59 @@ def compute_eagle3_loss(
     loss_normalizers = _compute_loss_normalizers(
         position_masks=position_masks,
     )
+    compact_plan = (
+        _build_compact_plan(position_masks=position_masks)
+        if bool(trim_loss_positions)
+        else None
+    )
+
+    past_key_values = DynamicCache()
+    total_loss = hidden_states.new_zeros((), dtype=torch.float32)
+    with torch.no_grad():
+        # A-level deliberately leaves this full-length teacher LM-head
+        # projection unchanged. Compaction starts only after target_logits.
+        target_logits = model(
+            target_last_hidden_states=target_last_hidden_states,
+            target_logits_only=True,
+        )
+    if compact_plan is None:
+        target_probs = _build_padded_next_token_target_probs(
+            target_logits=target_logits,
+            ttt_length=int(ttt_length),
+        )
+        compact_teacher_probs = None
+    else:
+        target_probs = None
+        compact_teacher_probs = _build_compact_teacher_probs(
+            target_logits=target_logits,
+            compact_plan=compact_plan,
+        )
+    del target_logits
 
     correct_masks = []
     accept_rate_masks = []
     valid_masks = []
     for step_idx in range(int(ttt_length)):
-        # Keep this slice alignment in sync with the Eagle3 reference.
-        target_step_probs = target_probs[
-            :,
-            step_idx : step_idx + seq_len,
-            :,
-        ].contiguous()
-        position_mask_step = position_masks[step_idx]
+        if compact_plan is None:
+            # Keep this slice alignment in sync with the Eagle3 reference.
+            target_step_probs = target_probs[
+                :,
+                step_idx : step_idx + seq_len,
+                :,
+            ].contiguous()
+            position_mask_step = position_masks[step_idx]
+            logit_indices = None
+            metric_scatter_indices = None
+            metric_full_shape = None
+        else:
+            compact_step = compact_plan.steps[step_idx]
+            target_step_probs = compact_teacher_probs.index_select(
+                0, compact_step.teacher_table_indices
+            ).unsqueeze(0)
+            position_mask_step = compact_step.position_mask
+            logit_indices = compact_step.draft_indices
+            metric_scatter_indices = compact_step.scatter_indices
+            metric_full_shape = (compact_plan.batch_size, compact_plan.seq_len)
         output = model(
             hidden_states=hidden_states,
             input_ids=current_input_ids,
@@ -416,6 +684,7 @@ def compute_eagle3_loss(
             use_cache=True,
             return_logits=True,
             rope_cache_step_offset=True,
+            logit_indices=logit_indices,
         )
         hidden_states = output.hidden_states
         correct_mask, accept_rate_mask, valid_mask = _log_eagle3_step_metrics(
@@ -423,16 +692,27 @@ def compute_eagle3_loss(
             draft_logits=output.draft_logits,
             target_probs=target_step_probs,
             position_mask=position_mask_step,
+            full_shape=metric_full_shape,
+            scatter_indices=metric_scatter_indices,
         )
         correct_masks.append(correct_mask)
         accept_rate_masks.append(accept_rate_mask)
         valid_masks.append(valid_mask)
-        step_loss = FusedLogSoftmaxLoss.apply(
-            output.draft_logits,
-            target_step_probs,
-            position_mask_step,
-            loss_normalizers[step_idx],
-        )
+        if compact_plan is None:
+            step_loss = FusedLogSoftmaxLoss.apply(
+                output.draft_logits,
+                target_step_probs,
+                position_mask_step,
+                loss_normalizers[step_idx],
+            )
+        else:
+            step_loss = FusedIndexedLogSoftmaxLoss.apply(
+                output.draft_logits,
+                compact_teacher_probs,
+                compact_step.teacher_table_indices,
+                position_mask_step,
+                loss_normalizers[step_idx],
+            )
         add_metric(
             f"ploss_{step_idx}",
             step_loss.detach(),
@@ -453,6 +733,10 @@ def compute_eagle3_loss(
 
 
 __all__ = [
+    "Eagle3CompactPlan",
+    "Eagle3CompactStep",
+    "FusedIndexedLogSoftmaxLoss",
     "FusedLogSoftmaxLoss",
+    "_build_compact_plan",
     "compute_eagle3_loss",
 ]
