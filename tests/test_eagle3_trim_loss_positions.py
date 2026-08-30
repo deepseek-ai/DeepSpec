@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 from transformers import DynamicCache
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
@@ -20,6 +21,25 @@ from deepspec.modeling.eagle3.loss import (
 from deepspec.modeling.eagle3.qwen3.modeling import Qwen3Eagle3Model
 from deepspec.modeling.eagle3.qwen3.config import build_draft_config
 from deepspec.utils.config import load_config, parse_opts_to_config
+
+
+class _TeacherIndexSelectCounter(TorchDispatchMode):
+    def __init__(self, teacher_table: torch.Tensor):
+        super().__init__()
+        self.teacher_storage_ptr = teacher_table.untyped_storage().data_ptr()
+        self.count = 0
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        del types
+        kwargs = kwargs or {}
+        if func == torch.ops.aten.index_select.default:
+            source = args[0]
+            if (
+                source.ndim == 2
+                and source.untyped_storage().data_ptr() == self.teacher_storage_ptr
+            ):
+                self.count += 1
+        return func(*args, **kwargs)
 
 
 def _position_masks(loss_mask: torch.Tensor, attention_mask: torch.Tensor, k: int):
@@ -245,6 +265,127 @@ def _run_tiny_arm(
 
 def _within_loss_tolerance(a: float, b: float) -> bool:
     return abs(a - b) <= 5e-3 * max(abs(a), abs(b)) + 1e-4
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_indexed_metrics_and_loss_match_materialized_reference_cuda():
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    unique_rows, num_rows, vocab_size = 7, 5, 97
+    target_table = torch.softmax(
+        torch.randn(unique_rows, vocab_size, device=device), dim=-1
+    )
+    target_token_ids_table = target_table.argmax(dim=-1)
+    target_indices = torch.tensor([0, 3, 3, 6, 1], device=device)
+    wrong_target_indices = (target_indices + 1).remainder(unique_rows)
+    position_mask = torch.ones(1, num_rows, 1, device=device)
+    scatter_indices = torch.arange(num_rows, device=device)
+    base_logits = torch.randn(
+        1, num_rows, vocab_size, device=device, dtype=torch.bfloat16
+    )
+
+    reference_logits = base_logits.detach().clone().requires_grad_(True)
+    reference_counter = _TeacherIndexSelectCounter(target_table)
+    with reference_counter, mock.patch.object(
+        loss_module, "add_metric", lambda *args, **kwargs: None
+    ):
+        materialized_target = target_table.index_select(
+            0, target_indices
+        ).unsqueeze(0)
+        reference_metrics = loss_module._log_eagle3_step_metrics(
+            step_idx=0,
+            draft_logits=reference_logits,
+            target_probs=materialized_target,
+            position_mask=position_mask,
+        )
+        reference_loss = loss_module.FusedLogSoftmaxLoss.apply(
+            reference_logits,
+            materialized_target,
+            position_mask,
+            float(num_rows),
+        )
+        reference_loss.backward()
+    reference_gradient = reference_logits.grad.detach().float().clone()
+    assert reference_counter.count >= 1
+
+    indexed_logits = base_logits.detach().clone().requires_grad_(True)
+    indexed_counter = _TeacherIndexSelectCounter(target_table)
+    with indexed_counter, mock.patch.object(
+        loss_module, "add_metric", lambda *args, **kwargs: None
+    ):
+        indexed_metrics = loss_module._log_eagle3_indexed_step_metrics(
+            step_idx=0,
+            draft_logits=indexed_logits,
+            target_table=target_table,
+            target_token_ids_table=target_token_ids_table,
+            target_indices=target_indices,
+            position_mask=position_mask,
+            full_shape=(1, num_rows),
+            scatter_indices=scatter_indices,
+        )
+        indexed_loss = loss_module.FusedIndexedLogSoftmaxLoss.apply(
+            indexed_logits,
+            target_table,
+            target_indices,
+            position_mask,
+            float(num_rows),
+        )
+        indexed_loss.backward()
+    indexed_gradient = indexed_logits.grad.detach().float().clone()
+    assert indexed_counter.count == 0
+
+    torch.testing.assert_close(indexed_metrics[0], reference_metrics[0])
+    torch.testing.assert_close(
+        indexed_metrics[1], reference_metrics[1], rtol=5e-3, atol=5e-3
+    )
+    torch.testing.assert_close(indexed_metrics[2], reference_metrics[2])
+    torch.testing.assert_close(
+        indexed_loss.detach().float(),
+        reference_loss.detach().float(),
+        rtol=5e-3,
+        atol=5e-3,
+    )
+    torch.testing.assert_close(
+        indexed_gradient,
+        reference_gradient,
+        rtol=5e-3,
+        atol=5e-3,
+    )
+
+    wrong_logits = base_logits.detach().clone().requires_grad_(True)
+    with mock.patch.object(
+        loss_module, "add_metric", lambda *args, **kwargs: None
+    ):
+        wrong_metrics = loss_module._log_eagle3_indexed_step_metrics(
+            step_idx=0,
+            draft_logits=wrong_logits,
+            target_table=target_table,
+            target_token_ids_table=target_token_ids_table,
+            target_indices=wrong_target_indices,
+            position_mask=position_mask,
+            full_shape=(1, num_rows),
+            scatter_indices=scatter_indices,
+        )
+        wrong_loss = loss_module.FusedIndexedLogSoftmaxLoss.apply(
+            wrong_logits,
+            target_table,
+            wrong_target_indices,
+            position_mask,
+            float(num_rows),
+        )
+        wrong_loss.backward()
+    negative_control_detected = False
+    for reference, wrong in (
+        (reference_metrics[1], wrong_metrics[1]),
+        (reference_loss.detach().float(), wrong_loss.detach().float()),
+        (reference_gradient, wrong_logits.grad.detach().float()),
+    ):
+        try:
+            torch.testing.assert_close(reference, wrong, rtol=5e-3, atol=5e-3)
+        except AssertionError:
+            negative_control_detected = True
+            break
+    assert negative_control_detected
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

@@ -281,6 +281,136 @@ def _log_eagle3_step_metrics(
     return correct_mask, accept_rate_mask, valid_mask
 
 
+@triton.jit
+def _indexed_accept_rate_kernel(
+    logits_ptr,
+    logits_stride,
+    target_table_ptr,
+    target_stride,
+    target_indices_ptr,
+    position_mask_ptr,
+    accept_rate_ptr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    program_id = tl.program_id(0).to(tl.int64)
+    logits_ptr += program_id * logits_stride
+    target_row = tl.load(target_indices_ptr + program_id).to(tl.int64)
+    target_table_ptr += target_row * target_stride
+    position_mask = tl.load(position_mask_ptr + program_id)
+    if position_mask == 0:
+        tl.store(accept_rate_ptr + program_id, 0.0)
+        return
+
+    m = float("-inf")
+    d = 0.0
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        logits_block = tl.load(
+            logits_ptr + offsets, mask=mask, other=float("-inf")
+        ).cast(tl.float32)
+        block_max = tl.max(tl.where(mask, logits_block, float("-inf")))
+        m_new = tl.maximum(m, block_max)
+        d = d * tl.exp(m - m_new) + tl.sum(
+            tl.where(mask, tl.exp(logits_block - m_new), 0.0)
+        )
+        m = m_new
+
+    l1_distance = 0.0
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+        logits_block = tl.load(logits_ptr + offsets, mask=mask, other=0.0).cast(
+            tl.float32
+        )
+        target_block = tl.load(
+            target_table_ptr + offsets, mask=mask, other=0.0
+        ).cast(tl.float32)
+        draft_prob = tl.exp(logits_block - m) / d
+        l1_distance += tl.sum(
+            tl.where(mask, tl.abs(draft_prob - target_block), 0.0)
+        )
+
+    accept_rate = tl.maximum(0.0, tl.minimum(1.0, 1.0 - 0.5 * l1_distance))
+    tl.store(accept_rate_ptr + program_id, accept_rate.to(tl.float32))
+
+
+@torch.no_grad()
+def _log_eagle3_indexed_step_metrics(
+    *,
+    step_idx: int,
+    draft_logits: torch.Tensor,
+    target_table: torch.Tensor,
+    target_token_ids_table: torch.Tensor,
+    target_indices: torch.Tensor,
+    position_mask: torch.Tensor,
+    full_shape: tuple[int, int],
+    scatter_indices: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute compact metrics by reading shared teacher rows through indices."""
+
+    assert draft_logits.is_cuda
+    assert draft_logits.shape[0] == 1
+    _, num_rows, vocab_size = draft_logits.shape
+    assert target_table.ndim == 2 and target_table.shape[1] == vocab_size
+    assert target_indices.numel() == num_rows
+    valid_mask = position_mask.squeeze(-1) > 0
+    target_token_ids = target_token_ids_table.index_select(0, target_indices).view(
+        1, num_rows
+    )
+    correct_mask = (draft_logits.argmax(-1) == target_token_ids) & valid_mask
+
+    accept_rate_mask = torch.empty(
+        (num_rows,), device=draft_logits.device, dtype=torch.float32
+    )
+    logits_flat = draft_logits.contiguous().view(num_rows, vocab_size)
+    target_table = target_table.contiguous()
+    target_indices = target_indices.contiguous()
+    position_mask_flat = position_mask.contiguous().view(num_rows)
+    BLOCK_SIZE, num_warps = _calculate_settings(vocab_size)
+    _indexed_accept_rate_kernel[(num_rows,)](
+        logits_flat,
+        logits_flat.stride(0),
+        target_table,
+        target_table.stride(0),
+        target_indices,
+        position_mask_flat,
+        accept_rate_mask,
+        vocab_size,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+    accept_rate_mask = accept_rate_mask.view(1, num_rows)
+
+    correct = correct_mask.to(torch.float32).sum()
+    valid_count = valid_mask.to(torch.float32).sum()
+    accept_sum = accept_rate_mask.sum()
+    add_metric(f"accuracy@{step_idx}", correct, den=valid_count, tag="train")
+    add_metric(f"accept_rate@{step_idx}", accept_sum, den=valid_count, tag="train")
+    add_metric(
+        f"valid_tokens@{step_idx}",
+        valid_count,
+        reduction="dp_sum",
+        tag="train",
+    )
+
+    num_valid_rows = int(scatter_indices.numel())
+    full_numel = int(full_shape[0]) * int(full_shape[1])
+
+    def scatter(values: torch.Tensor) -> torch.Tensor:
+        output = values.new_zeros(full_numel)
+        if num_valid_rows > 0:
+            output.index_copy_(
+                0,
+                scatter_indices,
+                values.reshape(-1)[:num_valid_rows],
+            )
+        return output.reshape(full_shape)
+
+    return scatter(correct_mask), scatter(accept_rate_mask), scatter(valid_mask)
+
+
 @torch.no_grad()
 def _log_eagle3_prefix_metrics(
     *,
@@ -311,6 +441,7 @@ def _log_softmax_forward_kernel(
     logits_stride,
     target_ptr,
     target_stride,
+    target_indices_ptr,
     position_mask_ptr,
     position_mask_stride,
     loss_ptr,
@@ -318,11 +449,15 @@ def _log_softmax_forward_kernel(
     m_ptr,
     d_ptr,
     n_cols,
+    HAS_TARGET_INDICES: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     program_id = tl.program_id(0).to(tl.int64)
     logits_ptr += program_id * logits_stride
-    target_ptr += program_id * target_stride
+    target_row = program_id
+    if HAS_TARGET_INDICES:
+        target_row = tl.load(target_indices_ptr + program_id).to(tl.int64)
+    target_ptr += target_row * target_stride
     position_mask_ptr += program_id * position_mask_stride
     position_mask = tl.load(position_mask_ptr)
     if position_mask == 0:
@@ -374,17 +509,22 @@ def _log_softmax_backward_kernel(
     logits_stride,
     target_ptr,
     target_stride,
+    target_indices_ptr,
     position_mask_ptr,
     grad_output_ptr,
     scaling_factor,
     m_ptr,
     d_ptr,
     n_cols,
+    HAS_TARGET_INDICES: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     program_id = tl.program_id(0).to(tl.int64)
     logits_ptr += program_id * logits_stride
-    target_ptr += program_id * target_stride
+    target_row = program_id
+    if HAS_TARGET_INDICES:
+        target_row = tl.load(target_indices_ptr + program_id).to(tl.int64)
+    target_ptr += target_row * target_stride
     position_mask_ptr += program_id
 
     position_mask = tl.load(position_mask_ptr)
@@ -426,14 +566,29 @@ def _log_softmax_backward_kernel(
         tl.store(logits_ptr + offsets, grad_block.to(tl.float32), mask=mask)
 
 
-def _fused_log_softmax_forward(logits, target_p, position_mask, normalizer):
+def _fused_log_softmax_forward(
+    logits,
+    target_p,
+    position_mask,
+    normalizer,
+    target_indices=None,
+):
     assert logits.is_cuda, "FusedLogSoftmaxLoss requires CUDA tensors."
-    assert logits.shape == target_p.shape
     assert position_mask.shape[:2] == logits.shape[:2]
     B, T, V = logits.shape
+    if target_indices is None:
+        assert logits.shape == target_p.shape
+        target_indices_ptr = target_p
+        has_target_indices = False
+    else:
+        assert B == 1
+        assert target_p.ndim == 2 and target_p.shape[1] == V
+        assert target_indices.numel() == B * T
+        target_indices_ptr = target_indices.contiguous()
+        has_target_indices = True
     loss = torch.zeros((B * T, 1), device=logits.device, dtype=torch.float32)
     logits_flat = logits.contiguous().view(B * T, V)
-    target_flat = target_p.contiguous().view(B * T, V)
+    target_flat = target_p.contiguous().view(-1, V)
     position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
     grid = (B * T,)
     m = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
@@ -444,6 +599,7 @@ def _fused_log_softmax_forward(logits, target_p, position_mask, normalizer):
         logits_flat.stride(0),
         target_flat,
         target_flat.stride(0),
+        target_indices_ptr,
         position_mask_flat,
         position_mask_flat.stride(0),
         loss,
@@ -451,6 +607,7 @@ def _fused_log_softmax_forward(logits, target_p, position_mask, normalizer):
         m,
         d,
         V,
+        HAS_TARGET_INDICES=has_target_indices,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
@@ -466,11 +623,22 @@ def _fused_log_softmax_backward(
     d,
     normalizer,
     grad_output,
+    target_indices=None,
 ):
     B, T, V = logits.shape
+    if target_indices is None:
+        assert logits.shape == target_p.shape
+        target_indices_ptr = target_p
+        has_target_indices = False
+    else:
+        assert B == 1
+        assert target_p.ndim == 2 and target_p.shape[1] == V
+        assert target_indices.numel() == B * T
+        target_indices_ptr = target_indices.contiguous()
+        has_target_indices = True
     scaling_factor = 1.0 / float(normalizer)
     logits_flat = logits.contiguous().view(B * T, V)
-    target_flat = target_p.contiguous().view(B * T, V)
+    target_flat = target_p.contiguous().view(-1, V)
     position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
     grid = (B * T,)
     BLOCK_SIZE, num_warps = _calculate_settings(V)
@@ -479,12 +647,14 @@ def _fused_log_softmax_backward(
         logits_flat.stride(0),
         target_flat,
         target_flat.stride(0),
+        target_indices_ptr,
         position_mask_flat,
         grad_output,
         scaling_factor,
         m,
         d,
         V,
+        HAS_TARGET_INDICES=has_target_indices,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
@@ -531,11 +701,11 @@ class FusedLogSoftmaxLoss(torch.autograd.Function):
 
 
 class FusedIndexedLogSoftmaxLoss(torch.autograd.Function):
-    """Fused loss whose target rows are views of one shared compact table.
+    """Fused loss that reads target rows directly from one shared compact table.
 
-    Forward and backward materialize only the current step's indexed rows. The
-    autograd context saves the shared table plus row indices, rather than one
-    ``[N_step, V]`` target copy for every TTT step.
+    Forward and backward pass row indices to the Triton kernels, so neither
+    phase materializes ``[N_step, V]`` target copies. The autograd context saves
+    only the shared table plus row indices.
     """
 
     @staticmethod
@@ -548,12 +718,12 @@ class FusedIndexedLogSoftmaxLoss(torch.autograd.Function):
         normalizer,
     ):
         assert logits.shape[0] == 1
-        target_p = target_table.index_select(0, target_indices).unsqueeze(0)
         loss, m, d = _fused_log_softmax_forward(
             logits,
-            target_p,
+            target_table,
             position_mask,
             normalizer,
+            target_indices=target_indices,
         )
         ctx.save_for_backward(
             logits.detach(),
@@ -576,15 +746,15 @@ class FusedIndexedLogSoftmaxLoss(torch.autograd.Function):
             m,
             d,
         ) = ctx.saved_tensors
-        target_p = target_table.index_select(0, target_indices).unsqueeze(0)
         grad_logits = _fused_log_softmax_backward(
             logits=logits,
-            target_p=target_p,
+            target_p=target_table,
             position_mask=position_mask,
             m=m,
             d=d,
             normalizer=ctx.normalizer,
             grad_output=grad_output,
+            target_indices=target_indices,
         )
         return grad_logits, None, None, None, None
 
@@ -643,12 +813,14 @@ def compute_eagle3_loss(
             ttt_length=int(ttt_length),
         )
         compact_teacher_probs = None
+        compact_teacher_token_ids = None
     else:
         target_probs = None
         compact_teacher_probs = _build_compact_teacher_probs(
             target_logits=target_logits,
             compact_plan=compact_plan,
         )
+        compact_teacher_token_ids = compact_teacher_probs.argmax(dim=-1)
     del target_logits
 
     correct_masks = []
@@ -668,9 +840,7 @@ def compute_eagle3_loss(
             metric_full_shape = None
         else:
             compact_step = compact_plan.steps[step_idx]
-            target_step_probs = compact_teacher_probs.index_select(
-                0, compact_step.teacher_table_indices
-            ).unsqueeze(0)
+            target_step_probs = None
             position_mask_step = compact_step.position_mask
             logit_indices = compact_step.draft_indices
             metric_scatter_indices = compact_step.scatter_indices
@@ -687,14 +857,26 @@ def compute_eagle3_loss(
             logit_indices=logit_indices,
         )
         hidden_states = output.hidden_states
-        correct_mask, accept_rate_mask, valid_mask = _log_eagle3_step_metrics(
-            step_idx=step_idx,
-            draft_logits=output.draft_logits,
-            target_probs=target_step_probs,
-            position_mask=position_mask_step,
-            full_shape=metric_full_shape,
-            scatter_indices=metric_scatter_indices,
-        )
+        if compact_plan is None:
+            correct_mask, accept_rate_mask, valid_mask = _log_eagle3_step_metrics(
+                step_idx=step_idx,
+                draft_logits=output.draft_logits,
+                target_probs=target_step_probs,
+                position_mask=position_mask_step,
+            )
+        else:
+            correct_mask, accept_rate_mask, valid_mask = (
+                _log_eagle3_indexed_step_metrics(
+                    step_idx=step_idx,
+                    draft_logits=output.draft_logits,
+                    target_table=compact_teacher_probs,
+                    target_token_ids_table=compact_teacher_token_ids,
+                    target_indices=compact_step.teacher_table_indices,
+                    position_mask=position_mask_step,
+                    full_shape=metric_full_shape,
+                    scatter_indices=metric_scatter_indices,
+                )
+            )
         correct_masks.append(correct_mask)
         accept_rate_masks.append(accept_rate_mask)
         valid_masks.append(valid_mask)

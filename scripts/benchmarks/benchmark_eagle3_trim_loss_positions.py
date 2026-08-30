@@ -196,11 +196,12 @@ def validate_results(results):
     d30 = by_density[0.3]["summary"]
     d60 = by_density[0.6]["summary"]
     d90 = by_density[0.9]["summary"]
-    assert d30["paired_median_speedup"] >= 1.05
-    assert d30["median_peak_reduction_bytes"] >= GIB
-    assert d60["paired_median_speedup"] >= 1.02
-    assert d60["median_peak_reduction_bytes"] > 0
+    assert d30["paired_median_speedup"] >= 1.50
+    assert d30["median_peak_reduction_bytes"] >= 11.0 * GIB
+    assert d60["paired_median_speedup"] >= 1.15
+    assert d60["median_peak_reduction_bytes"] >= 5.0 * GIB
     assert d90["paired_median_speedup"] >= 0.98
+    assert d90["median_peak_reduction_bytes"] >= 0
     assert (
         d30["paired_median_speedup"]
         >= d60["paired_median_speedup"]
