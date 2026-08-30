@@ -334,6 +334,7 @@ class Qwen3Eagle3Model(Qwen3PreTrainedModel):
         target_logits_only: bool = False,
         return_logits: bool = False,
         rope_cache_step_offset: bool = False,
+        logit_indices: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> torch.Tensor | Eagle3ForwardOutput:
         if target_logits_only:
@@ -394,7 +395,14 @@ class Qwen3Eagle3Model(Qwen3PreTrainedModel):
                 **kwargs,
             )
         if return_logits:
-            draft_logits = self.compute_logits(hidden_states)
+            logit_hidden_states = hidden_states
+            if logit_indices is not None:
+                hidden_size = int(hidden_states.shape[-1])
+                logit_hidden_states = hidden_states.reshape(
+                    -1, hidden_size
+                ).index_select(0, logit_indices)
+                logit_hidden_states = logit_hidden_states.unsqueeze(0)
+            draft_logits = self.compute_logits(logit_hidden_states)
             target_logits = None
             if target_last_hidden_states is not None:
                 with torch.no_grad():

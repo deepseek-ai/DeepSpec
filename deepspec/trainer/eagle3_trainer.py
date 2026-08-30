@@ -64,6 +64,9 @@ class Qwen3Eagle3Trainer(BaseTrainer):
             batch=batch,
             ttt_length=int(self.draft_model.ttt_length),
             step_loss_decay=float(self.draft_model.step_loss_decay),
+            trim_loss_positions=bool(
+                getattr(self.draft_model.config, "trim_loss_positions", False)
+            ),
         )
 
 

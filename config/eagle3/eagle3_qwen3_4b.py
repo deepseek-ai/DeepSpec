@@ -12,6 +12,7 @@ model = dict(
     target_layer_ids=[1, 9, 17, 25, 33],
     ttt_length=7,
     step_loss_decay=0.8,
+    trim_loss_positions=False,
     draft_num_hidden_layers=1,
 )
 
