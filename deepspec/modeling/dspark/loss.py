@@ -57,31 +57,35 @@ def _compute_local_probabilistic_stats(
     return tau_prob_sum, pos_accept_sums
 
 
-def _compute_accept_rate_3d(
+def _compute_l1_dist_per_token(
     *,
-    outputs: DSparkForwardOutput,
+    draft_logits: torch.Tensor,
     aligned_target_logits: Optional[torch.Tensor],
 ) -> Optional[torch.Tensor]:
     if aligned_target_logits is None:
         return None
-    draft_probs = torch.softmax(outputs.draft_logits.float(), dim=-1)
+    draft_probs = torch.softmax(draft_logits.float(), dim=-1)
     target_probs = torch.softmax(aligned_target_logits.float(), dim=-1)
-    accept_rate_3d = 1.0 - 0.5 * (draft_probs - target_probs).abs().sum(dim=-1)
-    return accept_rate_3d.clamp_(0.0, 1.0)
+    return (draft_probs - target_probs).abs().sum(dim=-1)
+
+
+def _compute_accept_rate_3d(
+    l1_dist_per_token: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
+    if l1_dist_per_token is None:
+        return None
+    return (1.0 - 0.5 * l1_dist_per_token).clamp_(0.0, 1.0)
 
 
 def _compute_local_l1_term(
     *,
     outputs: DSparkForwardOutput,
-    aligned_target_logits: Optional[torch.Tensor],
+    l1_dist_per_token: Optional[torch.Tensor],
     loss_weight_mask: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     zero = outputs.draft_logits.new_zeros((), dtype=torch.float32)
-    if aligned_target_logits is None:
+    if l1_dist_per_token is None:
         return zero, zero
-    draft_probs = torch.softmax(outputs.draft_logits.float(), dim=-1)
-    target_probs = torch.softmax(aligned_target_logits.float(), dim=-1)
-    l1_dist_per_token = (draft_probs - target_probs).abs().sum(dim=-1)
     l1_loss_num = (l1_dist_per_token * loss_weight_mask).sum()
     l1_loss_den = loss_weight_mask.sum()
     return l1_loss_num, l1_loss_den
@@ -113,10 +117,11 @@ def _collect_local_terms(
     ce_loss_num = (loss_per_token * flat_weights).sum()
     ce_loss_den = flat_weights.sum()
     aligned_target_logits = outputs.aligned_target_logits
-    accept_rate_3d = _compute_accept_rate_3d(
-        outputs=outputs,
+    l1_dist_per_token = _compute_l1_dist_per_token(
+        draft_logits=draft_logits,
         aligned_target_logits=aligned_target_logits,
     )
+    accept_rate_3d = _compute_accept_rate_3d(l1_dist_per_token)
     zero = ce_loss_num.new_zeros(())
     assert l1_loss_alpha <= 0 or aligned_target_logits is not None, (
         "aligned_target_logits is required when l1_loss_alpha > 0."
@@ -124,7 +129,7 @@ def _collect_local_terms(
     if l1_loss_alpha > 0:
         l1_loss_num, l1_loss_den = _compute_local_l1_term(
             outputs=outputs,
-            aligned_target_logits=aligned_target_logits,
+            l1_dist_per_token=l1_dist_per_token,
             loss_weight_mask=loss_weight_mask,
         )
     else:
