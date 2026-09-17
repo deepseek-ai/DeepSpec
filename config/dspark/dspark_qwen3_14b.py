@@ -1,16 +1,15 @@
 import os
 
 from deepspec.trainer import Qwen3DSparkTrainer
+from deepspec.utils.constant import BASE_CKPT_DIR, BASE_TB_DIR, QWEN_3_14B
 
 
-BASE_TB_DIR = os.path.expanduser("~/tensorboard")
-BASE_CKPT_DIR = os.path.expanduser("~/checkpoints")
 project_name = "deepspec"
 exp_name = "dspark_block7_qwen3_14b"
 seed = 42
 
 model = dict(
-    target_model_name_or_path="Qwen/Qwen3-14B",
+    target_model_name_or_path=QWEN_3_14B,
     block_size=7,
     num_draft_layers=5,
     target_layer_ids=[1, 10, 19, 28, 37],

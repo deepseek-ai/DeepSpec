@@ -143,7 +143,14 @@ def _launch_eval(
     tensorboard_dir: str,
     exp_name: str,
 ) -> None:
-    print("You can use this function to launch your auto eval script!")
+    from deepspec.utils.constant import auto_eval_command
+    if auto_eval_command is not None:
+        command = auto_eval_command(target_model_name_or_path,checkpoint_dir,step,tensorboard_dir,exp_name)
+        print_on_global_main(f"Submitting auto eval for {checkpoint_dir}")
+        print_on_global_main(command)
+        os.system(command)
+    else:
+        print("You can use this function to launch your auto eval script!")
 
 class BaseTrainer:
     data_collator_cls = None

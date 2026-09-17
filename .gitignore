@@ -9,3 +9,4 @@ logs/
 build/
 dist/
 .DS_Store
+deepspec/utils/constant/internal.py

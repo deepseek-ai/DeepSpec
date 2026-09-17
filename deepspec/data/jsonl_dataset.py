@@ -4,12 +4,9 @@ import mmap
 import os
 import pickle
 from bisect import bisect_right
-
 import torch
 from tqdm import tqdm
-
-CACHE_DIR = os.path.expanduser("~/.cache/deepspec")
-
+from deepspec.utils.constant import CACHE_DIR
 
 class JsonLineDataset(torch.utils.data.Dataset):
     def __init__(self, data_paths):

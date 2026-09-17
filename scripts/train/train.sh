@@ -2,13 +2,8 @@
 
 # Local launch mirrors the repo's node launcher, not standard
 # torchrun semantics. train.py spawns one worker per visible GPU by itself.
-# Here RANK/WORLD_SIZE mean node_rank/node_count, so WORLD_SIZE=1 is a
-# single-node local run; total GPU workers come from CUDA_VISIBLE_DEVICES.
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-export MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
-export MASTER_PORT=${MASTER_PORT:-29500}
-export RANK=${RANK:-0}
-export WORLD_SIZE=${WORLD_SIZE:-1}
+# init_dist defaults to single-node local run when MASTER_ADDR/MASTER_PORT and
+# RANK/WORLD_SIZE are unset. Total GPU workers come from CUDA_VISIBLE_DEVICES.
 
 # Available public configs:
 ## dflash
@@ -40,6 +35,6 @@ target_cache_dir=${target_cache_dir:-${HOME}/.cache/deepspec/qwen3_4b_target_cac
 # with more memory (e.g. 4 or 8 on 80GB cards), or keep it at 1 if you hit OOM.
 # Override it without editing the config via:
 #   --opts "train.local_batch_size=4"
-python train.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py \
     --config config/dspark/dspark_qwen3_4b.py \
     --opts "data.target_cache_path=${target_cache_dir}"

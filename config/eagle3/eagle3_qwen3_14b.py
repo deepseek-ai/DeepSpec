@@ -1,16 +1,15 @@
 import os
 
 from deepspec.trainer import Qwen3Eagle3Trainer
+from deepspec.utils.constant import BASE_CKPT_DIR, BASE_TB_DIR, QWEN_3_14B
 
 
-BASE_TB_DIR = os.path.expanduser("~/tensorboard")
-BASE_CKPT_DIR = os.path.expanduser("~/checkpoints")
 project_name = "deepspec"
 exp_name = "eagle3_ttt7_qwen3_14b"
 seed = 0
 
 model = dict(
-    target_model_name_or_path="Qwen/Qwen3-14B",
+    target_model_name_or_path=QWEN_3_14B,
     target_layer_ids=[1, 10, 19, 28, 37],
     ttt_length=7,
     step_loss_decay=0.8,

@@ -1,16 +1,14 @@
 import os
 
 from deepspec.trainer import Gemma4Eagle3Trainer
+from deepspec.utils.constant import BASE_CKPT_DIR, BASE_TB_DIR, GEMMA_4_12B
 
-
-BASE_TB_DIR = os.path.expanduser("~/tensorboard")
-BASE_CKPT_DIR = os.path.expanduser("~/checkpoints")
 project_name = "deepspec"
 exp_name = "eagle3_ttt7_gemma4_12b"
 seed = 0
 
 model = dict(
-    target_model_name_or_path="google/gemma-4-12B-it",
+    target_model_name_or_path=GEMMA_4_12B,
     target_layer_ids=[5, 17, 29, 41, 46],
     ttt_length=7,
     step_loss_decay=0.8,

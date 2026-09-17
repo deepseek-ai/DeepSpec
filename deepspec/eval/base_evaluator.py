@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
-from transformers import AutoTokenizer, DynamicCache
+from transformers import DynamicCache
 
 from deepspec.data.parser import encode_chat_messages
 from deepspec.utils.sampling import (

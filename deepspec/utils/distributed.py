@@ -1,5 +1,4 @@
 import contextlib
-import math
 import os
 import time
 from datetime import timedelta
@@ -11,11 +10,13 @@ from torch.utils.data import Sampler
 
 def init_dist(local_rank: int, timeout_minutes: int = 60):
     local_world_size = torch.cuda.device_count()
-    node_rank = int(os.environ["RANK"])
-    node_world_size = int(os.environ["WORLD_SIZE"])
+    node_rank = int(os.environ.get("RANK", "0"))
+    node_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    master_port = os.environ.get("MASTER_PORT", "29500")
     rank = node_rank * local_world_size + local_rank
     world_size = node_world_size * local_world_size
-    init_method = f"tcp://{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
+    init_method = f"tcp://{master_addr}:{master_port}"
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 

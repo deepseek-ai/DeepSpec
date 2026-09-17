@@ -30,12 +30,6 @@ if (( num_workers < 1 )); then
     exit 1
 fi
 
-export CUDA_VISIBLE_DEVICES=${visible_gpus}
-export MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
-export MASTER_PORT=${MASTER_PORT:-29500}
-export RANK=${RANK:-0}
-export WORLD_SIZE=${WORLD_SIZE:-1}
-
 server_addresses=()
 for ((worker_id = 0; worker_id < num_workers; worker_id++)); do
     server_addresses+=("${server_host}:$((start_port + worker_id))")
@@ -69,7 +63,7 @@ python scripts/data/generate_train_data.py \
 
 echo "Stop sglang before Step 3 if it is using the same GPUs."
 echo "Step 3/3: preparing ${model_path} target cache: ${cache_dir}"
-python scripts/data/prepare_target_cache.py \
+CUDA_VISIBLE_DEVICES="${visible_gpus}" python scripts/data/prepare_target_cache.py \
     --config "${config_path}" \
     --train-data-path "${train_data_path}" \
     --output-dir "${cache_dir}" \
