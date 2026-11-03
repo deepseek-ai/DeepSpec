@@ -298,6 +298,7 @@ class BaseTrainer:
             num_replicas=self.world_size,
             rank=self.global_rank,
             total_size=self.samples_per_epoch,
+            seed=int(self.args.seed),
             start_global_offset_samples=start_offset_samples,
             num_samples=num_samples,
         )
