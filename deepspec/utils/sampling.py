@@ -12,19 +12,21 @@ def logits_to_probs(logits: torch.Tensor, temperature: float) -> torch.Tensor:
 
 
 def sample_from_probs(probs: torch.Tensor) -> torch.Tensor:
-    bsz, seq_len, vocab_size = probs.shape
+    orig_shape = probs.shape[:-1]
+    vocab_size = probs.shape[-1]
     flat = probs.reshape(-1, vocab_size)
-    return torch.multinomial(flat, num_samples=1).reshape(bsz, seq_len)
+    return torch.multinomial(flat, num_samples=1).reshape(orig_shape)
 
 
 def sample_tokens(logits: torch.Tensor, temperature: float = 0.0) -> torch.Tensor:
     if temperature < 1e-5:
         return torch.argmax(logits, dim=-1)
 
-    bsz, seq_len, vocab_size = logits.shape
+    orig_shape = logits.shape[:-1]
+    vocab_size = logits.shape[-1]
     flat_logits = logits.reshape(-1, vocab_size) / temperature
     probs = torch.softmax(flat_logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1).reshape(bsz, seq_len)
+    return torch.multinomial(probs, num_samples=1).reshape(orig_shape)
 
 
 def gather_token_probs(probs: torch.Tensor, token_ids: torch.Tensor) -> torch.Tensor:
@@ -41,7 +43,7 @@ def sample_residual(
         residual = torch.where(residual_mass <= 1e-8, target_probs, residual)
         residual_mass = residual.sum(dim=-1, keepdim=True)
     residual = residual / residual_mass.clamp_min(1e-8)
-    return sample_from_probs(residual.unsqueeze(1)).squeeze(1)
+    return sample_from_probs(residual)
 
 
 __all__ = [
